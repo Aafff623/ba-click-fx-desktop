@@ -121,6 +121,7 @@ Source: "{#StageRoot}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}\.staging\current
   ; installer that does not understand the current journal schema.
   Source: "{#StageRoot}\Installer\installer-diagnostics.ps1"; DestDir: "{tmp}"; Flags: dontcopy
   Source: "{#StageRoot}\Installer\installer-state.ps1"; DestDir: "{tmp}"; Flags: dontcopy
+  Source: "{#StageRoot}\Installer\installer-identity.ps1"; DestDir: "{tmp}"; Flags: dontcopy
   Source: "{#StageRoot}\Installer\protected-paths.ps1"; DestDir: "{tmp}"; Flags: dontcopy
   Source: "{#StageRoot}\Installer\install-machine.ps1"; DestDir: "{tmp}"; Flags: dontcopy
   Source: "{#StageRoot}\Installer\register-user-package.ps1"; DestDir: "{tmp}"; Flags: dontcopy
@@ -1275,6 +1276,7 @@ begin
   try
     ExtractTemporaryFile('installer-diagnostics.ps1');
     ExtractTemporaryFile('installer-state.ps1');
+    ExtractTemporaryFile('installer-identity.ps1');
     ExtractTemporaryFile('protected-paths.ps1');
     ExtractTemporaryFile('install-machine.ps1');
     ExtractTemporaryFile('register-user-package.ps1');
@@ -1315,6 +1317,11 @@ begin
     Exit;
   end;
   SourcePath := TempRoot + 'protected-paths.ps1';
+  DestinationPath := CurrentRecoveryRoot + 'installer-identity.ps1';
+  if not CopyFile(TempRoot + 'installer-identity.ps1', DestinationPath, False) then
+  begin
+    Exit;
+  end;
   DestinationPath := CurrentRecoveryRoot + 'protected-paths.ps1';
   if not CopyFile(SourcePath, DestinationPath, False) then
   begin
@@ -1339,6 +1346,7 @@ begin
   end;
   if (ResolveCurrentRecoveryScript('installer-diagnostics.ps1') = '') or
     (ResolveCurrentRecoveryScript('installer-state.ps1') = '') or
+    (ResolveCurrentRecoveryScript('installer-identity.ps1') = '') or
     (ResolveCurrentRecoveryScript('protected-paths.ps1') = '') or
     (ResolveCurrentRecoveryScript('install-machine.ps1') = '') or
     (ResolveCurrentRecoveryScript('register-user-package.ps1') = '') then

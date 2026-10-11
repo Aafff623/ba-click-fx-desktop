@@ -28,6 +28,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer-diagnostics.ps1')
 . (Join-Path $PSScriptRoot 'protected-paths.ps1')
 . (Join-Path $PSScriptRoot 'installer-state.ps1')
+. (Join-Path $PSScriptRoot 'installer-identity.ps1')
 $script:InstallerStep = 'initialize'
 $script:InstallerRelatedFailures = New-Object Collections.Generic.List[object]
 $script:PayloadRoot = ''
@@ -1316,9 +1317,15 @@ function Assert-IdentityPayload
         [string]$PendingStatePath,
 
         [Parameter(Mandatory = $true)]
-        [object]$PendingStateSeed
+        [object]$PendingStateSeed,
+
+        [string]$IdentityProductVersion = $ProductVersion,
+
+        [string]$IdentityPackageVersion = $PackageVersion
     )
 
+    $ProductVersion = $IdentityProductVersion
+    $PackageVersion = $IdentityPackageVersion
     $identityDirectory = Join-Path $InstallRoot 'Identity'
     $metadataBaseName = "CialloKing.BaClickFxDesktop-$PackageVersion"
     $metadataFile = Get-Item -LiteralPath (
@@ -2602,7 +2609,7 @@ function Assert-PendingStateObject
         }
     }
     $schema = [int]$State.schema
-    if ($schema -notin @(1, 2) -or
+    if ($schema -notin @(1, 2, 3) -or
         [string]$State.stateKind -ne 'prepare')
     {
         throw 'Protected pending state has an unsupported schema.'
@@ -2623,7 +2630,7 @@ function Assert-PendingStateObject
     {
         throw 'Protected pending state has an invalid transaction identifier.'
     }
-    if ($schema -eq 2 -and
+    if ($schema -ge 2 -and
         ($null -eq $State.PSObject.Properties['templateSha256'] -or
             [string]$State.templateSha256 -notmatch '^[0-9A-Fa-f]{64}$'))
     {
@@ -2750,6 +2757,10 @@ function Assert-PendingStateObject
     }
     if ($RequireIntegrity)
     {
+        if ($schema -ge 3)
+        {
+            $null = Read-RollbackIdentityJournal -State $State -InstallRoot $InstallRoot -RequireReady
+        }
         $integrityRoot = $InstallRoot
         if ($packagePathIsStaged)
         {
@@ -2936,16 +2947,26 @@ function Test-RegisteredPackageUsesCertificate
     $verifiedSigners = @{}
     foreach ($packageFile in $packageFiles)
     {
-        $signature = Get-AuthenticodeSignature `
-            -LiteralPath $packageFile.FullName `
-            -ErrorAction Stop
-        if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
-            $null -eq $signature.SignerCertificate)
+        $certificate = $null
+        try
+        {
+            # Expiry changes deployability, not which certificate signed the
+            # protected historical file. Preserve mathematical signature checks.
+            $certificate = Read-IdentityPackageSigner -Path $packageFile.FullName
+            $verifiedSigners[$packageFile.Name] =
+                ([string]$certificate.Thumbprint).ToUpperInvariant()
+        }
+        catch
         {
             continue
         }
-        $verifiedSigners[$packageFile.Name] =
-            ([string]$signature.SignerCertificate.Thumbprint).ToUpperInvariant()
+        finally
+        {
+            if ($null -ne $certificate)
+            {
+                $certificate.Dispose()
+            }
+        }
         if ($verifiedSigners[$packageFile.Name] -eq $thumbprint)
         {
             return $true
@@ -3517,6 +3538,20 @@ function Assert-PayloadRollbackManifest
         throw 'The payload rollback manifest cannot be a reparse point.'
     }
     Ensure-RollbackEvidenceAcl -RollbackRoot $rollbackRoot
+    if ($null -ne $State.PSObject.Properties['schema'] -and [int]$State.schema -ge 3 -and
+        $null -ne $State.rollbackIdentity)
+    {
+        # The original-user registration phase needs only the public rollback
+        # identity. Keep historical file/data backups restricted to administrators.
+        $null = Read-RollbackIdentityJournal -State $State -InstallRoot $InstallRoot -RequireReady
+        Set-ProtectedStateAcl -Path $rollbackRoot -ReadSid ([string]$State.userSid)
+        $identityRoot = [string]$State.rollbackIdentity.root
+        foreach ($item in @((Get-Item -LiteralPath $identityRoot)) +
+            @(Get-ChildItem -LiteralPath $identityRoot -Recurse -Force))
+        {
+            Set-ProtectedStateAcl -Path $item.FullName -ReadSid ([string]$State.userSid)
+        }
+    }
     Assert-ProtectedStateAcl -Path $rollbackRoot
     Assert-ProtectedStateAcl -Path $ManifestPath
 
@@ -4913,6 +4948,10 @@ function Invoke-PendingRollback
         Restore-DataDirectory `
             -State $State `
             -InstallRoot ([IO.Path]::GetFullPath($InstallDirectory))
+        if ([int]$State.schema -ge 3)
+        {
+            Copy-ReadyRollbackPackage -State $State -InstallRoot ([IO.Path]::GetFullPath($InstallDirectory))
+        }
     }
 }
 
@@ -5017,6 +5056,10 @@ function Invoke-PendingRollbackCleanup
         }
         Remove-EmptyRollbackDirectories -InstallRoot $InstallRoot
         return
+    }
+    if ([int]$State.schema -ge 3)
+    {
+        Complete-RollbackIdentity -State $State -InstallRoot $InstallRoot
     }
     Remove-PendingPackageFiles `
         -State $State `
@@ -5257,6 +5300,17 @@ if ($Phase -eq 'Rollback')
             }
             if (-not $previousMatches)
             {
+                if ([int]$pendingState.schema -ge 3 -and
+                    $null -ne $pendingState.rollbackInstallState)
+                {
+                    $rollbackState = $pendingState.rollbackInstallState
+                    $previousMatches =
+                        [string]$committedState.transactionId -eq [string]$rollbackState.transactionId -and
+                        [string]$committedState.stateDigest -eq [string]$rollbackState.stateDigest
+                }
+            }
+            if (-not $previousMatches)
+            {
                 $unrelatedState = [System.InvalidOperationException]::new(
                     'The protected install state belongs to an unrelated transaction.')
                 Stop-InstallerWithFailure `
@@ -5486,7 +5540,7 @@ if ($Phase -eq 'Prepare')
         }
 
         $pendingSeed = [ordered]@{
-            schema = 2
+            schema = 3
             stateKind = 'prepare'
             commitState = 'prepared'
             filesCommitted = $false
@@ -5505,6 +5559,8 @@ if ($Phase -eq 'Prepare')
             templateSha256 = [string]$metadata.templateSha256
             preexistingPackageFullNames = $preexistingFullNames
             oldInstallState = $oldInstallState
+            rollbackIdentity = $null
+            rollbackInstallState = $null
             installerDirectoryCreated = $installerDirectoryCreated
             preparedUtc = [DateTime]::UtcNow.ToString('o')
         }
@@ -5513,6 +5569,9 @@ if ($Phase -eq 'Prepare')
             -InstallRoot $script:PayloadRoot `
             -PendingStatePath $machineStateFullPath `
             -PendingStateSeed $pendingSeed
+        $script:InstallerStep = 'prepare-resigned-rollback-identity'
+        Prepare-RollbackIdentity -InstallRoot $installRoot -PayloadRoot $script:PayloadRoot `
+            -PendingPath $machineStateFullPath
         $script:InstallerStep = 'validate-prepared-identity'
         Assert-ProtectedStateAcl -Path $machineStateFullPath
         $pendingState = Get-Content -LiteralPath $machineStateFullPath -Raw | ConvertFrom-Json

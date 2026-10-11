@@ -305,6 +305,7 @@ function Test-PowerShellScriptContracts
         'tools/installer/capture-user-context.ps1',
         'tools/installer/installer-diagnostics.ps1',
         'tools/installer/installer-state.ps1',
+        'tools/installer/installer-identity.ps1',
         'tools/installer/install-machine.ps1',
         'tools/installer/protected-paths.ps1',
         'tools/installer/register-user-package.ps1',
@@ -821,6 +822,7 @@ function Test-InstallerScriptWhitelist
         'ChineseSimplified.isl',
         'installer-diagnostics.ps1',
         'installer-state.ps1',
+        'installer-identity.ps1',
         'install-machine.ps1',
         'protected-paths.ps1',
         'register-user-package.ps1',
@@ -840,6 +842,7 @@ function Test-InstallerScriptWhitelist
             '\x27capture-user-context\.ps1\x27\s*,\s*' +
             '\x27installer-diagnostics\.ps1\x27\s*,\s*' +
             '\x27installer-state\.ps1\x27\s*,\s*' +
+            '\x27installer-identity\.ps1\x27\s*,\s*' +
             '\x27install-machine\.ps1\x27\s*,\s*' +
             '\x27protected-paths\.ps1\x27\s*,\s*' +
             '\x27register-user-package\.ps1\x27\s*,\s*' +
@@ -1033,7 +1036,7 @@ function Test-InstallerScriptWhitelist
         -Description 'substring SAN URI matching'
     Assert-TextContains `
         -Text $installMachine `
-        -Pattern 'function\s+Test-RegisteredPackageUsesCertificate[\s\S]*Get-AppxPackage\s+-AllUsers[\s\S]*PackageUserInformation[\s\S]*Get-AuthenticodeSignature' `
+        -Pattern 'function\s+Test-RegisteredPackageUsesCertificate[\s\S]*Get-AppxPackage\s+-AllUsers[\s\S]*PackageUserInformation[\s\S]*Read-IdentityPackageSigner' `
         -Description 'certificate cleanup scans every registered user and package version'
     Assert-TextExcludes `
         -Text $installMachine `
@@ -1510,6 +1513,7 @@ function Test-InnoPayloadContract
         '{#StageRoot}\Installer\*',
         '{#StageRoot}\Installer\installer-diagnostics.ps1',
         '{#StageRoot}\Installer\installer-state.ps1',
+        '{#StageRoot}\Installer\installer-identity.ps1',
         '{#StageRoot}\Installer\protected-paths.ps1',
         '{#StageRoot}\Installer\install-machine.ps1',
         '{#StageRoot}\Installer\register-user-package.ps1'
@@ -2524,11 +2528,11 @@ function Test-SparsePackageContract
         -Description 'pending recovery classifies a torn state pair from its journal'
     Assert-TextContains `
         -Text $machineInstaller `
-        -Pattern '\$schema\s+-eq\s+2[\s\S]*templateSha256' `
+        -Pattern '\$schema\s+-(eq|ge)\s+2[\s\S]*templateSha256' `
         -Description 'schema 1 pending recovery does not require the schema 2 template hash'
     Assert-TextContains `
         -Text $registration `
-        -Pattern '\$schema\s+-eq\s+2[\s\S]*templateSha256' `
+        -Pattern '\$schema\s+-(eq|ge)\s+2[\s\S]*templateSha256' `
         -Description 'user-context registration accepts legacy schema 1 pending state'
     $uninstallerAst = Get-ParsedScript `
         -RelativePath 'tools/installer/unregister-machine.ps1'
@@ -4059,6 +4063,7 @@ Test-ProtectedAclIdentityResolutionContract
 Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
 Test-CertificateLifecycleBoundaryContract
+& (Join-Path $repositoryRoot 'tools/verify-installer-identity-recovery.ps1') -RepositoryRoot $repositoryRoot
 Test-VersionMapping
 Test-InstallerLogArchive
 Test-InstallerScriptWhitelist

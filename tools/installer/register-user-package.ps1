@@ -22,6 +22,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer-diagnostics.ps1')
 . (Join-Path $PSScriptRoot 'protected-paths.ps1')
 . (Join-Path $PSScriptRoot 'installer-state.ps1')
+. (Join-Path $PSScriptRoot 'installer-identity.ps1')
 $script:InstallerStep = 'initialize'
 $effectiveRollbackAction = $RollbackAction
 if ($Rollback -and [string]::IsNullOrWhiteSpace($effectiveRollbackAction))
@@ -266,6 +267,18 @@ function Assert-PendingRollbackMayRemoveNewPackage
     }
     if ($pair.present -and -not $pair.valid)
     {
+        if ([int]$State.schema -ge 3)
+        {
+            if ($null -eq $State.oldInstallState)
+            {
+                # A first install has no previous registration to preserve.
+                return $true
+            }
+            $null = Read-RollbackIdentityJournal -State $State -InstallRoot $InstallRoot -RequireReady
+            # Restore the protected machine snapshot before changing an
+            # ambiguous registration; RestorePrevious explicitly replaces it.
+            return $false
+        }
         # A present but damaged pair could be the result of a torn state
         # commit. Preserve the package and recovery evidence until repair can
         # establish which transaction is authoritative.
@@ -492,7 +505,7 @@ function Assert-PendingState
         }
     }
     $schema = [int]$State.schema
-    if ($schema -notin @(1, 2) -or [string]$State.stateKind -ne 'prepare')
+    if ($schema -notin @(1, 2, 3) -or [string]$State.stateKind -ne 'prepare')
     {
         throw 'Protected pending state has an unsupported schema.'
     }
@@ -520,7 +533,7 @@ function Assert-PendingState
         }
     }
     Assert-PayloadFileSetLedger -State $State
-    if ($schema -eq 2 -and
+    if ($schema -ge 2 -and
         ($null -eq $State.PSObject.Properties['templateSha256'] -or
             [string]$State.templateSha256 -notmatch '^[0-9A-Fa-f]{64}$'))
     {
@@ -676,6 +689,11 @@ function Restore-PreviousPackage
         return
     }
     $oldState = $State.oldInstallState
+    if ([int]$State.schema -ge 3)
+    {
+        $null = Read-RollbackIdentityJournal -State $State -InstallRoot $InstallRoot -RequireReady
+        $oldState = $State.rollbackInstallState
+    }
     $oldPackagePath = Assert-PreviousPackageMaterial `
         -State $oldState `
         -InstallRoot $InstallRoot
@@ -685,7 +703,16 @@ function Restore-PreviousPackage
     )
     if ($existing.Count -gt 0)
     {
-        return
+        if ([int]$State.schema -lt 3)
+        {
+            return
+        }
+        # A re-signed same-version package has the same full name. Re-register
+        # it explicitly so a surviving candidate cannot be mistaken for rollback.
+        foreach ($package in $existing)
+        {
+            Remove-AppxPackage -Package ([string]$package.PackageFullName) -ErrorAction Stop
+        }
     }
     Add-AppxPackage `
         -Path $oldPackagePath `
@@ -776,9 +803,19 @@ function Remove-PreviousPackageForReplacement
 {
     param(
         [Parameter(Mandatory = $true)]
-        [object]$State
+        [object]$State,
+
+        [string]$InstallRoot = ''
     )
 
+    if ([int]$State.schema -ge 3)
+    {
+        if ([string]::IsNullOrWhiteSpace($InstallRoot))
+        {
+            throw 'The protected install root is required before replacing a package.'
+        }
+        $null = Read-RollbackIdentityJournal -State $State -InstallRoot $InstallRoot -RequireReady
+    }
     if ($null -eq $State.oldInstallState)
     {
         return
@@ -902,7 +939,7 @@ try
     }
 
     $script:InstallerStep = 'remove-previous-package-registration'
-    Remove-PreviousPackageForReplacement -State $machineState
+    Remove-PreviousPackageForReplacement -State $machineState -InstallRoot $installRoot
 
     $script:InstallerStep = 'register-identity-package'
     Add-AppxPackage `

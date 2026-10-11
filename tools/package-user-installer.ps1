@@ -357,6 +357,7 @@ try
         'capture-user-context.ps1',
         'installer-diagnostics.ps1',
         'installer-state.ps1',
+        'installer-identity.ps1',
         'install-machine.ps1',
         'protected-paths.ps1',
         'register-user-package.ps1',
