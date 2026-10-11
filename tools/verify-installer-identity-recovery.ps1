@@ -306,15 +306,23 @@ Export-ModuleMember -Function @()
     Assert-Probe (($parent.oldInstallState | ConvertTo-Json -Depth 12) -ceq $oldJson) 'The immutable old state changed.'
     Assert-Probe ($parent.rollbackInstallState.certificateThumbprint -ne $old.certificateThumbprint) 'Rollback reused the expired certificate.'
     & $module { param($Parent, $Root, $Core)
-        $script:Registered = @($Parent.oldInstallState.packageFullName)
         $script:ExpectedFullName = $Parent.oldInstallState.packageFullName
-        $script:FailNextAdd = $true
-        $machineState = $Parent; $installRoot = $Root; $packageName = $Parent.packageName
+        $installRoot = $Root; $packageName = $Parent.packageName
         $packagePath = Join-Path $Root 'new-candidate.msix'; $registeredPackage = $null
-        . ([scriptblock]::Create($Core))
-        if ($script:Registered.Count -ne 0 -or $script:RegistrationSucceeded -or
-            $script:FailureStep -ne 'register-identity-package')
-        { throw 'Production registration failure did not enter the expected rollback boundary.' }
+        foreach ($version in @($Parent.oldInstallState.packageVersion, $Parent.packageVersion))
+        {
+            $script:Registered = @($Parent.oldInstallState.packageFullName)
+            $script:FailNextAdd = $true
+            $machineState = $Parent.PSObject.Copy()
+            $machineState.packageVersion = $version
+            $machineState.productVersion = $version.Substring(0, $version.LastIndexOf('.'))
+            . ([scriptblock]::Create($Core))
+            if ($script:Registered.Count -ne 0 -or $script:RegistrationSucceeded -or
+                $script:FailureStep -ne 'register-identity-package')
+            { throw "Production registration failure did not enter rollback for $version." }
+            Copy-ReadyRollbackPackage -State $Parent -InstallRoot $Root
+            Restore-PreviousPackage -State $Parent -InstallRoot $Root
+        }
         Copy-ReadyRollbackPackage -State $Parent -InstallRoot $Root
         Restore-PreviousPackage -State $Parent -InstallRoot $Root
         $Parent.filesCommitted = $true
@@ -370,7 +378,7 @@ Export-ModuleMember -Function @()
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $damaged -PackagePath $package }
     [IO.File]::AppendAllText($package, 'tamper')
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $old -PackagePath $package }
-    Write-Host 'Identity recovery verified: missing trust repair/uninstall, expired CMS signer, fresh rollback, registration failure, retry and tamper rejection.'
+    Write-Host 'Identity recovery verified: missing trust repair/uninstall, expired CMS signer, fresh rollback, same-version/upgrade registration failure, cleanup interruption retry and tamper rejection.'
 }
 finally
 {
