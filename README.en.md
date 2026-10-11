@@ -114,7 +114,7 @@ Reset defaults (重置默认) preserves saved hotkeys, the current paused/runnin
 See [SUPPORT.md](SUPPORT.md) and the [validation documentation](docs/VALIDATION.md) for detailed support boundaries and evidence.
 
 **What if a certificate fails?** The Host can still start, but borderless capture requests may fail and fall back to effects only.
-Run the current installer again as the same Windows user who runs the Host; same-version repair is supported. Borderless capture still needs system permission after installation.
+Run the current installer again as the same Windows user who runs the Host; same-version repair is supported. Repair requires complete installation state, matching old files, and the unsigned template. If evidence is missing, the installer retains recovery materials and reports an error. Borderless capture still needs system permission after installation.
 
 The distributed installer has no public code signature, so SmartScreen may show "Unknown Publisher". Users do not need separate certificates, MSIX files, or SDK tools.
 
@@ -123,6 +123,7 @@ The distributed installer has no public code signature, so SmartScreen may show 
 
 The installer creates a target-machine certificate to sign the Sparse Package that supplies Package Identity. Each run of the current installer creates a new certificate and signs again.
 Valid certificates have no near-expiry threshold; expiry, missing/damaged certificates, or signature mismatch makes borderless requests fall back to FX-only.
+Starting with 0.2.20, a missing or expired old public certificate can be repaired after checking the protected state and embedded package signature. Before replacing the old package, the installer signs an old-version rollback package with another fresh certificate. If new-package registration fails, it restores old files and data, then registers the rollback package.
 
 Installation-state validation is separate: the Control Center requires a complete matching pair of `INSTALL-STATE.json` and `.bak` to activate an installed Host.
 An abnormal installation state (安装状态异常) still blocks startup. Run the installer again as the same Windows user who runs the Host; do not manually delete state or transaction files.
