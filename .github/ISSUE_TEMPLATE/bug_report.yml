@@ -52,9 +52,9 @@ body:
         **如何获取日志 / How to collect logs**
 
         - 复现后，在 Control Center 的“系统”页点击“打开日志目录”。上传 `ba-click-fx-desktop-support.log`、`BAFX.ControlCenter.log`，以及相关时段的 `.log.1` 至 `.log.3` 备份（如有）。可以打包为 ZIP；请先保留日志，再清理或重装。
-        - 便携版日志位于 EXE 目录；安装版位于安装目录的 `data` 子目录。安装或卸载失败时，另附错误框给出的完整路径下的安装日志。
+        - 便携版日志位于 EXE 目录；安装版位于安装目录的 `data` 子目录。使用支持日志归档的安装器成功安装并退出后，同一目录还会保留 `ba-click-fx-desktop-install-*.log`，安装或签名问题可一并上传。安装或卸载失败时，另附错误框给出的完整路径下的日志。
         - After reproducing the problem, open Control Center → System → Open log folder. Attach `ba-click-fx-desktop-support.log`, `BAFX.ControlCenter.log` and any relevant `.log.1`–`.log.3` backups. A ZIP is welcome; save the logs before cleaning or reinstalling.
-        - Portable logs are beside the executables; installed builds use the installation directory's `data` folder. For install/uninstall failures, also attach the installer log at the full path shown in the error dialog.
+        - Portable logs are beside the executables; installed builds use the installation directory's `data` folder. After a successful installation with log archiving and Setup exit, that folder also contains `ba-click-fx-desktop-install-*.log`; include it for installation or signing issues. For install/uninstall failures, also attach the log at the full path shown in the error dialog.
 
         公开上传前，请检查日志中的用户名、本机路径以及截图中的个人信息。
         Before posting publicly, check logs for usernames/local paths and screenshots for personal information.

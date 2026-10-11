@@ -166,7 +166,8 @@ If the issue persists, use the [bug report form](https://github.com/CialloKing/b
 - In Control Center, open System → Open log folder and attach `ba-click-fx-desktop-support.log` and `BAFX.ControlCenter.log`; include relevant `.log.1` through `.log.3` files if the affected period has rotated out. Portable logs are beside the executables; installed builds use the installation directory's `data` folder. Multiple files can be packed into a ZIP.
 - For color, border or missing-effect issues, include screenshots or a recording of the normal, affected and recovered states with their times. Drag attachments into the form or use the attachment button.
 
-For installation or uninstallation failures, attach the installer log at the full path shown in the error dialog. Check logs for usernames and local paths before posting publicly.
+After a successful installation with an installer that includes log archiving, exiting Setup moves the complete installation log into the installation directory's `data` folder as `ba-click-fx-desktop-install-*.log`. Use Open log folder in Control Center to view it alongside runtime logs. Each installation keeps a separate record.
+If installation does not complete successfully or archiving fails, the original log is retained. For install/uninstall failures, attach the log at the full path shown in the error dialog. Check logs for usernames and local paths before posting publicly.
 See [SUPPORT.md](SUPPORT.md) for further diagnostics.
 
 ## Building from source

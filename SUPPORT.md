@@ -302,6 +302,12 @@ Control Center 不具备该入口，因此首次升级到 0.2.5 仍需用户手�
 “打开项目仓库”不依赖更新检查或网络响应中的地址，始终前往
 [官方项目仓库](https://github.com/CialloKing/ba-click-fx-desktop)，用户可在仓库页面点 Star。
 
+使用包含日志归档功能的安装器成功安装后，退出安装器会启动后台归档，将完整 Inno 安装日志移动到安装目录的
+`data` 子目录，命名为 `ba-click-fx-desktop-install-<UTC 时间>-<唯一标识>.log`。控制中心“系统 → 打开日志目录”
+可同时查看安装日志与运行日志；重复安装不覆盖旧记录。归档先核对内容，再删除原文件；归档失败时保留原日志，
+并尽可能在同一目录写入 `ba-click-fx-desktop-install-archive-error.log`，记录原路径与错误原因。
+安装未成功完成时不归档；“清理诊断日志”只清理 Host 与控制中心的运行日志，安装归档继续保留。
+
 安装或卸载失败时，错误框会显示失败阶段、步骤、HRESULT、脚本行号和 Inno 日志的完整路径。反馈问题时请
 提供该日志文件，不要只提供错误框截图。日志中的 `BAFX_INSTALL_FAILURE:` 是便于人工定位的单行摘要，
 `BAFX_INSTALL_DIAGNOSTIC_JSON:` 保存 PowerShell 版本、Windows 版本、异常类型、ErrorDetails、调用位置、
