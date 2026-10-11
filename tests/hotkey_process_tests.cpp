@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <source_location>
 #include <stdexcept>
 
 namespace
@@ -33,7 +34,8 @@ void pump()
 }
 
 template<typename Predicate>
-void until(Predicate predicate, const DWORD timeout = 3'000U)
+void until(Predicate predicate, const DWORD timeout = 3'000U,
+    const std::source_location location = std::source_location::current())
 {
     const auto deadline = GetTickCount64() + timeout;
     while (!predicate() && GetTickCount64() < deadline)
@@ -41,7 +43,13 @@ void until(Predicate predicate, const DWORD timeout = 3'000U)
         pump();
         MsgWaitForMultipleObjectsEx(0U, nullptr, 10U, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
-    check(predicate(), "timed out waiting for native hotkey state");
+    if (!predicate())
+    {
+        // Input injection depends on the interactive desktop. Preserve the
+        // failing call site so IPC timeouts and missing hotkeys are distinct.
+        throw std::runtime_error("timed out waiting for native hotkey state at line "
+            + std::to_string(location.line()));
+    }
 }
 
 LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -294,7 +302,18 @@ void run()
     check(manager.invoke(HostHotkeys::Operation::Query).state.captureToken == 0U,
         "wrong capture token unexpectedly renewed the recording lease");
     press(VK_F22);
-    until([&control]() { return control.snapshot().activeFxProfile == "纯点击"; });
+    try
+    {
+        until([&control]() { return control.snapshot().activeFxProfile == "纯点击"; });
+    }
+    catch (...)
+    {
+        const auto state = manager.invoke(HostHotkeys::Operation::Query).state;
+        std::cerr << "expiry diagnostic: profile=" << control.snapshot().activeFxProfile
+            << ";registeredMask=" << state.registeredMask << ";captureToken=" << state.captureToken
+            << ";actionError=" << control.takeHotkeyError() << '\n';
+        throw;
+    }
     target.bindings[3] = HotkeyBinding{modifiers, spareKey};
     const auto exitSaved = save(target);
     if (!exitSaved.succeeded())
