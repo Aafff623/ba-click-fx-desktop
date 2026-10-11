@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer-diagnostics.ps1')
 . (Join-Path $PSScriptRoot 'protected-paths.ps1')
 . (Join-Path $PSScriptRoot 'installer-state.ps1')
+. (Join-Path $PSScriptRoot 'installer-identity.ps1')
 $script:InstallerStep = 'initialize'
 $script:InstallerProductVersion = ''
 $script:InstallerPackageVersion = ''
@@ -1127,10 +1128,15 @@ function Assert-InstallStateIntegrity
         Select-Object -First 1
     $allowMissingCertificate = $uninstallPhaseRank -ge
         (Get-UninstallPhaseRank -Phase 'certificate-removing')
-    if (($null -eq $certificate -and -not $allowMissingCertificate) -or
-        ($null -ne $certificate -and
+    if ($null -eq $certificate -and -not $allowMissingCertificate -and $packagePresent)
+    {
+        # Uninstall remains precise even when an external cleanup removed the
+        # public trust entry: the protected package authenticates its signer.
+        Assert-RecordedPackageSigner -State $State -PackagePath $packagePath
+    }
+    if ($null -ne $certificate -and
             (Get-CertificateSha256 -Certificate $certificate) -ne
-                [string]$State.certificateSha256))
+                [string]$State.certificateSha256)
     {
         throw 'Installed certificate does not match protected install state.'
     }

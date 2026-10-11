@@ -144,6 +144,7 @@ try
     }
     Assert-Probe ($expired.NotAfter -lt (Get-Date)) 'The historical certificate did not expire.'
     Assert-RecordedPackageSigner -State $old -PackagePath $package
+    $old | Add-Member -NotePropertyName stateDigest -NotePropertyValue (Get-StateDigest $old)
     $oldJson = $old | ConvertTo-Json -Depth 12
     $metadata = [pscustomobject]@{
         schema = 3; identityMode = 'target-machine-self-signed'
@@ -174,7 +175,9 @@ try
     $functions = @(
         Get-ProbeFunction 'tools/installer/install-machine.ps1' @('New-StateWithDigest', 'Join-Ledger',
             'Get-ExplicitlyOwnedCertificateThumbprints', 'Write-Utf8NoBom', 'Copy-VerifiedInstallerFile',
-            'Assert-FileHash', 'Get-IdentityTemplateContentHash', 'Get-CertificateSha256', 'Assert-IdentityIntegrityMaterial')
+            'Assert-FileHash', 'Get-IdentityTemplateContentHash', 'Get-CertificateSha256', 'Assert-IdentityIntegrityMaterial',
+            'Assert-InstallStatePair', 'Assert-InstallStateObject', 'Read-OldInstallState')
+        Get-ProbeFunction 'tools/installer/unregister-machine.ps1' @('Get-UninstallPhaseRank', 'Assert-InstallStateIntegrity')
         Get-ProbeFunction 'tools/installer/register-user-package.ps1' @('Restore-PreviousPackage',
             'Assert-PreviousPackageMaterial', 'Get-InstallerFileHash', 'Remove-PreviousPackageForReplacement', 'Remove-NewPackages')
         (Get-Command Write-ProbeSignedPackage).Definition.Insert(0, "function Write-ProbeSignedPackage {`n") + "`n}"
@@ -197,6 +200,7 @@ $script:Fresh = $Fresh
 $script:Registered = @()
 $script:Events = New-Object Collections.Generic.List[string]
 $script:FailNextAdd = $false
+$script:TrustMissing = $false
 function Assert-NoReparsePath { param($Path, [switch]$AllowMissing) }
 function Assert-ProtectedStateAcl { param($Path) }
 function Write-ProtectedJson { param($Path, $Value, $ReadSid)
@@ -207,8 +211,13 @@ function Write-ProtectedInstallState { param($Path, $Value, $ReadSid)
 function Get-AuthenticodeSignature { param($LiteralPath)
     [pscustomobject]@{ Status = [Management.Automation.SignatureStatus]::Valid; SignerCertificate = $script:Fresh } }
 function Test-Path { param($LiteralPath, $PathType)
-    if ($LiteralPath.StartsWith('Cert:\')) { return -not $LiteralPath.StartsWith('Cert:\LocalMachine\My\') }
+    if ($LiteralPath.StartsWith('Cert:\')) {
+        return -not $script:TrustMissing -and -not $LiteralPath.StartsWith('Cert:\LocalMachine\My\') }
     Microsoft.PowerShell.Management\Test-Path @PSBoundParameters }
+function Get-ChildItem { param($Path, $LiteralPath, [switch]$Recurse, [switch]$Force)
+    if ($Path -eq 'Cert:\LocalMachine\TrustedPeople') {
+        if (-not $script:TrustMissing) { $script:Fresh }; return }
+    Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters }
 function Get-Item { param($LiteralPath, [switch]$Force)
     if ($LiteralPath.StartsWith('Cert:\')) { return $script:Fresh }
     Microsoft.PowerShell.Management\Get-Item @PSBoundParameters }
@@ -248,6 +257,33 @@ function Assert-IdentityPayload { param($InstallRoot, $PendingStatePath, $Pendin
 Export-ModuleMember -Function @()
 '@
     $module = New-Module -ScriptBlock ([scriptblock]::Create($stub)) -ArgumentList $repositoryRoot, $functions, $fresh
+    $statePath = Join-Path $root 'Installer\INSTALL-STATE.json'
+    [IO.File]::WriteAllText($statePath, $oldJson)
+    [IO.File]::WriteAllText("$statePath.bak", $oldJson)
+    & $module { $script:TrustMissing = $true }
+    Assert-ProbeFailure { & $module { param($Root, $Sid)
+        Read-OldInstallState -InstallRoot $Root -UserSid $Sid
+    } $root $old.installedUserSid }
+    & $module { param($Root, $Old)
+        $null = Read-OldInstallState -InstallRoot $Root -UserSid $Old.installedUserSid -AllowCertificateRepair
+        Assert-InstallStateIntegrity -State $Old -InstallRoot $Root
+    } $root $old
+    $damagedState = $oldJson | ConvertFrom-Json
+    $damagedState.hostSha256 = '0' * 64
+    $damagedJson = $damagedState | ConvertTo-Json -Depth 12
+    [IO.File]::WriteAllText($statePath, $damagedJson)
+    [IO.File]::WriteAllText("$statePath.bak", $damagedJson)
+    Assert-ProbeFailure { & $module { param($Root, $Sid)
+        Read-OldInstallState -InstallRoot $Root -UserSid $Sid -AllowCertificateRepair
+    } $root $old.installedUserSid }
+    [IO.File]::WriteAllText($statePath, $oldJson)
+    [IO.File]::WriteAllText("$statePath.bak", $oldJson)
+    [IO.File]::AppendAllText($hostPath, 'tamper')
+    Assert-ProbeFailure { & $module { param($Root, $Sid)
+        Read-OldInstallState -InstallRoot $Root -UserSid $Sid -AllowCertificateRepair
+    } $root $old.installedUserSid }
+    [IO.File]::WriteAllText($hostPath, 'unchanged historical Host fixture')
+    & $module { $script:TrustMissing = $false }
     & $module { param($Root, $Payload, $Pending)
         Prepare-RollbackIdentity -InstallRoot $Root -PayloadRoot $Payload -PendingPath $Pending
     } $root $payload $pending
@@ -292,7 +328,7 @@ Export-ModuleMember -Function @()
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $damaged -PackagePath $package }
     [IO.File]::AppendAllText($package, 'tamper')
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $old -PackagePath $package }
-    Write-Host 'Identity recovery verified: expired CMS signer, fresh rollback, registration failure, retry and tamper rejection.'
+    Write-Host 'Identity recovery verified: missing trust repair/uninstall, expired CMS signer, fresh rollback, registration failure, retry and tamper rejection.'
 }
 finally
 {

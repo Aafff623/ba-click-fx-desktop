@@ -1193,7 +1193,9 @@ function Assert-IdentityIntegrityMaterial
 
         [string]$ExpectedReplacementHostSha256 = '',
 
-        [string]$ReplacementHostPath = ''
+        [string]$ReplacementHostPath = '',
+
+        [switch]$AllowCertificateRepair
     )
 
     foreach ($propertyName in @(
@@ -1295,8 +1297,18 @@ function Assert-IdentityIntegrityMaterial
 
     $certificatePath =
         "Cert:\LocalMachine\TrustedPeople\$([string]$State.certificateThumbprint)"
+    if ($AllowCertificateRepair)
+    {
+        # A missing trust entry must not block re-signing. Bind the historical
+        # certificate to the protected package bytes before relaxing that check.
+        Assert-RecordedPackageSigner -State $State -PackagePath $PackagePath
+    }
     if (-not (Test-Path -LiteralPath $certificatePath))
     {
+        if ($AllowCertificateRepair)
+        {
+            return
+        }
         throw 'Protected identity state certificate is not trusted.'
     }
     $certificate = Get-Item -LiteralPath $certificatePath
@@ -1917,7 +1929,9 @@ function Assert-InstallStateObject
 
         [string]$ReplacementHostPath = '',
 
-        [switch]$SkipPayloadIntegrity
+        [switch]$SkipPayloadIntegrity,
+
+        [switch]$AllowCertificateRepair
     )
 
     foreach ($propertyName in @(
@@ -2099,7 +2113,8 @@ function Assert-InstallStateObject
             -InstallRoot $InstallRoot `
             -PackagePath (Join-Path (Join-Path $InstallRoot 'Identity') $packageFile) `
             -ExpectedReplacementHostSha256 $replacementHostSha256 `
-            -ReplacementHostPath $ReplacementHostPath
+            -ReplacementHostPath $ReplacementHostPath `
+            -AllowCertificateRepair:$AllowCertificateRepair
     }
     return $State
 }
@@ -2117,7 +2132,9 @@ function Read-OldInstallState
 
         [string]$ReplacementHostPath = '',
 
-        [switch]$SkipPayloadIntegrity
+        [switch]$SkipPayloadIntegrity,
+
+        [switch]$AllowCertificateRepair
     )
 
     $path = Join-Path $InstallRoot 'Installer\INSTALL-STATE.json'
@@ -2147,7 +2164,8 @@ function Read-OldInstallState
         -ExpectedUserSid $UserSid `
         -ExpectedReplacementHostSha256 $ExpectedReplacementHostSha256 `
         -ReplacementHostPath $ReplacementHostPath `
-        -SkipPayloadIntegrity:$SkipPayloadIntegrity
+        -SkipPayloadIntegrity:$SkipPayloadIntegrity `
+        -AllowCertificateRepair:$AllowCertificateRepair
 }
 
 function Remove-OldCertificate
@@ -5487,7 +5505,8 @@ if ($Phase -eq 'Prepare')
             -InstallRoot $installRoot `
             -UserSid ([string]$context.userSid) `
             -ExpectedReplacementHostSha256 $replacementHostSha256 `
-            -ReplacementHostPath (Join-Path $script:PayloadRoot 'ba-click-fx-desktop.exe')
+            -ReplacementHostPath (Join-Path $script:PayloadRoot 'ba-click-fx-desktop.exe') `
+            -AllowCertificateRepair
         $metadataPath = Join-Path (Join-Path $script:PayloadRoot 'Identity') `
             "CialloKing.BaClickFxDesktop-$PackageVersion.identity-template.json"
         $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
