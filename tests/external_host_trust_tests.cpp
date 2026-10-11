@@ -82,11 +82,16 @@ BAFX_TEST(external_host_trust_expired_certificate_fails_closed)
     bafx::windows::ExternalHostTrustResult result{};
     result.status = bafx::windows::ExternalHostTrustStatus::CertificateInvalid;
     result.error = CERT_E_EXPIRED;
+    result.certificateCheck = "validity";
+    result.certificateReason = "expired";
 
     BAFX_CHECK(!bafx::windows::externalHostTrusted(result));
     BAFX_CHECK(
         bafx::windows::externalHostTrustStatusName(result.status)
         == "certificate-invalid");
+    const std::string diagnostic = bafx::windows::externalHostTrustDiagnostic(result);
+    BAFX_CHECK(diagnostic.find("CertificateCheck=validity;CertificateReason=expired")
+        != std::string::npos);
 }
 
 BAFX_TEST(external_host_trust_state_pair_mismatch_is_named)

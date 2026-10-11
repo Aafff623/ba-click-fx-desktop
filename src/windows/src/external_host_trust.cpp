@@ -1091,13 +1091,24 @@ void stripUtf8Bom(std::string& contents) noexcept
     CRYPT_HASH_BLOB hash{};
     hash.cbData = static_cast<DWORD>(sha1.size());
     hash.pbData = reinterpret_cast<BYTE*>(const_cast<std::byte*>(sha1.data()));
-    return CertificateContext(CertFindCertificateInStore(
+    PCCERT_CONTEXT context = CertFindCertificateInStore(
         store,
         X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
         0U,
         CERT_FIND_HASH,
         &hash,
-        nullptr));
+        nullptr);
+    if (context == nullptr)
+    {
+        const DWORD error = GetLastError();
+        if (error != static_cast<DWORD>(CRYPT_E_NOT_FOUND))
+        {
+            throw HResultError(
+                HRESULT_FROM_WIN32(error == ERROR_SUCCESS ? ERROR_INVALID_DATA : error),
+                "CertFindCertificateInStore");
+        }
+    }
+    return CertificateContext(context);
 }
 
 [[nodiscard]] ExternalHostTrustStatus verifyPackageCertificate(
@@ -1111,7 +1122,9 @@ void stripUtf8Bom(std::string& contents) noexcept
     if (trust.result() != ERROR_SUCCESS)
     {
         error = static_cast<HRESULT>(trust.result());
-        result.certificateReason = "winverifytrust-failed";
+        result.certificateReason = error == CERT_E_EXPIRED
+            ? "certificate-expired-or-not-yet-valid"
+            : error == CERT_E_WRONG_USAGE ? "code-signing-usage-missing" : "winverifytrust-failed";
         return ExternalHostTrustStatus::PackageSignatureInvalid;
     }
     PCCERT_CONTEXT signer = trust.signerCertificate();
@@ -1123,6 +1136,7 @@ void stripUtf8Bom(std::string& contents) noexcept
     }
 
     result.certificateCheck = "signer-identity";
+    result.certificateReason = "certificate-query-failed";
     const std::optional<std::vector<std::byte>> expectedThumbprint =
         parseHex(state.certificateThumbprint);
     if (!expectedThumbprint.has_value())
@@ -1138,11 +1152,18 @@ void stripUtf8Bom(std::string& contents) noexcept
         signer->cbCertEncoded));
     result.observedCertificateSha256 = hexBytes(signerSha256);
     if (signerThumbprint != *expectedThumbprint
-        || result.observedCertificateSha256 != state.certificateSha256
-        || !certificateSubjectMatches(signer, state.publisher))
+        || result.observedCertificateSha256 != state.certificateSha256)
     {
         error = E_ACCESSDENIED;
-        result.certificateReason = "signer-identity-mismatch";
+        result.certificateReason = "signer-fingerprint-or-hash-mismatch";
+        return ExternalHostTrustStatus::SignerCertificateMismatch;
+    }
+    result.certificateCheck = "subject";
+    result.certificateReason = "name-query-failed";
+    if (!certificateSubjectMatches(signer, state.publisher))
+    {
+        error = E_ACCESSDENIED;
+        result.certificateReason = "publisher-mismatch";
         return ExternalHostTrustStatus::SignerCertificateMismatch;
     }
     result.certificateCheck = "validity";
@@ -1163,6 +1184,7 @@ void stripUtf8Bom(std::string& contents) noexcept
     }
 
     result.certificateCheck = "trusted-store";
+    result.certificateReason = "trusted-store-query-failed";
     CertificateStore trustedPeople(L"TrustedPeople");
     CertificateContext trusted = findCertificate(
         trustedPeople.get(),
@@ -1180,6 +1202,7 @@ void stripUtf8Bom(std::string& contents) noexcept
     }
 
     result.certificateCheck = "private-key-cleanup";
+    result.certificateReason = "private-store-query-failed";
     CertificateStore privateStore(L"My");
     CertificateContext privateCertificate = findCertificate(
         privateStore.get(),
