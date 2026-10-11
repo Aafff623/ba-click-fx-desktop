@@ -878,6 +878,36 @@ Windows 11 目标硬件上的 `RequestAccessAsync(Borderless)`、无边框最终
 当前条件保持 `Not Run`，不纳入本轮闭环结论。隔离环境中的安装中断、注册失败和真实恢复矩阵同样保持
 `Not Run`，后续具备环境后再单独验收。
 
+### 5.9 自签名与重新签名回滚候选（2026-10-11）
+
+0.2.20 候选将 Package 版本递增至 `0.2.20.0`。本地使用 Windows 10 build 19045、Visual Studio 2026 和
+Windows SDK `10.0.28000.0` 完成 Full/Slim Release 构建。Full 原有 46 项 CTest 中 45 项首次通过；新恢复
+夹具在 PowerShell 7 中遇到 ISO 日期自动转换导致摘要不一致，修正为使用安装器要求的 Windows PowerShell 5.1
+后，失败项最终复测通过（原完整轮 `124.92 s`，失败项复测 `7.41 s`）。Slim CTest `45/45` 通过，耗时
+`108.90 s`；补充准备失败保护后，Full/Slim 安装器契约分别再通过 `1/1`（`7.41 s` / `7.38 s`）。
+Windows 单元测试为 `156 tests, 0 failures`。
+
+安装器契约在 Windows PowerShell `5.1.19041.6456` 与 PowerShell `7.6.5` 两个入口通过；恢复夹具始终在
+5.1 中执行。名称比较测试直接使用 Windows `CertStrToNameW` / `CertNameToStrW`，覆盖 PrintableString、
+UTF8String、其他 CN 和额外名称字段。用途与查询失败检查分别验证 `CERT_E_WRONG_USAGE` 和原始
+`E_ACCESSDENIED`；有效期失败诊断保留 `CERT_E_EXPIRED`。
+
+`tools/verify-installer-identity-recovery.ps1` 使用内存 CNG 密钥、真实 CMS 签名和实际文件哈希，覆盖：
+缺失旧公钥的受控修复/卸载、过期旧签名的历史认证、独立重新签名回滚包、同版本/升级的新包注册失败、
+重复恢复、准备失败时保留旧注册、材料删除中断后的清理重试，以及状态摘要、Host、包和证书哈希被篡改时拒绝继续。该夹具模拟
+Appx 注册、机器证书存储、ACL 和原生签名边界，不是 Windows 实际安装/激活验收。本机已安装的 0.2.19
+MSIX 另外以只读方式核对包哈希、CMS 签名、证书指纹、DER 哈希及 Publisher，通过。
+
+Full 候选安装器位于 `artifacts/local/self-signing-recovery-0.2.20-20261011/`，SHA-256 为
+`80FBE5C40147FA4B0B93E776C8CC283509E9B80BFBBF8B4370F639CC20178CF0`。Inno Setup `6.7.3` 编译、
+版本与 PE 依赖检查通过；独立复算哈希与 sidecar 一致。候选携带 unsigned identity template 和 native signer，
+不携带证书或私钥。文档检查覆盖 8 个文档的本地链接、锚点、发行指导和构建预设，通过。
+
+当前令牌不是管理员，未发现可用的 Windows Sandbox/Hyper-V/VMware/VirtualBox 入口。隔离环境中真实的
+“旧证书过期 → 新包注册失败 → 旧版本重新注册并激活”、修复/升级/中断矩阵仍为 **Not Run**。
+Windows 11 包身份、无边框授权与实际画面分别保持 **Not Run**；当前已安装程序、注册和证书未被修改。
+本轮交付是本地候选，不作为正式发布或硬件验收证据。
+
 ## 6. 需求追踪
 
 | 合同 | ADR | Spike | Validation suite |
