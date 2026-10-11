@@ -1,5 +1,7 @@
 #include "bafx/windows/external_host_trust.hpp"
 
+#include "bafx/windows/detail/certificate_subject.hpp"
+
 #include "bafx/windows/error.hpp"
 #include "bafx/windows/portable_paths.hpp"
 #include "bafx/windows/unique_handle.hpp"
@@ -1072,38 +1074,13 @@ void stripUtf8Bom(std::string& contents) noexcept
     PCCERT_CONTEXT certificate,
     const std::string_view expectedSubject)
 {
-    const winrt::hstring subject = winrt::to_hstring(expectedSubject);
-    DWORD encodedSize = 0U;
-    if (!CertStrToNameW(
-            X509_ASN_ENCODING,
-            subject.c_str(),
-            CERT_X500_NAME_STR,
-            nullptr,
-            nullptr,
-            &encodedSize,
-            nullptr))
+    std::wstring subject;
+    const HRESULT result = detail::formatCertificateSubject(certificate, subject);
+    if (FAILED(result))
     {
-        throwLastError("CertStrToNameW(size)");
+        throw HResultError(result, "Formatting the signing certificate subject");
     }
-    std::vector<BYTE> encoded(encodedSize);
-    if (!CertStrToNameW(
-            X509_ASN_ENCODING,
-            subject.c_str(),
-            CERT_X500_NAME_STR,
-            nullptr,
-            encoded.data(),
-            &encodedSize,
-            nullptr))
-    {
-        throwLastError("CertStrToNameW(value)");
-    }
-    CERT_NAME_BLOB expectedName{};
-    expectedName.cbData = encodedSize;
-    expectedName.pbData = encoded.data();
-    return CertCompareCertificateName(
-        X509_ASN_ENCODING,
-        &certificate->pCertInfo->Subject,
-        &expectedName);
+    return subject == winrt::to_hstring(expectedSubject).c_str();
 }
 
 [[nodiscard]] bool certificateAllowsCodeSigning(PCCERT_CONTEXT certificate)

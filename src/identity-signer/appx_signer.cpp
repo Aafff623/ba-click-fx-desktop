@@ -1,5 +1,7 @@
 #include "appx_signer.hpp"
 
+#include "bafx/windows/detail/certificate_subject.hpp"
+
 #include <windows.h>
 
 #include <ncrypt.h>
@@ -274,33 +276,11 @@ using UniqueCertificate = std::unique_ptr<const CERT_CONTEXT, CertificateDeleter
 
 void requireExactSubject(const PCCERT_CONTEXT certificate)
 {
-    // New-SelfSignedCertificate uses UTF8String for the CN while
-    // CertStrToNameW commonly emits PrintableString. Comparing the encoded
-    // DER blobs would reject an otherwise identical subject, so normalize the
-    // complete X.500 name through the platform formatter first.
-    DWORD characterCount = CertNameToStrW(
-        X509_ASN_ENCODING,
-        &certificate->pCertInfo->Subject,
-        CERT_X500_NAME_STR,
-        nullptr,
-        0U);
-    if (characterCount == 0U)
+    std::wstring subject;
+    const HRESULT result = bafx::windows::detail::formatCertificateSubject(certificate, subject);
+    if (FAILED(result))
     {
-        throwLastError("Formatting the signing certificate subject");
-    }
-    std::wstring subject(characterCount, L'\0');
-    if (CertNameToStrW(
-            X509_ASN_ENCODING,
-            &certificate->pCertInfo->Subject,
-            CERT_X500_NAME_STR,
-            subject.data(),
-            characterCount) == 0U)
-    {
-        throwLastError("Formatting the signing certificate subject");
-    }
-    if (!subject.empty() && subject.back() == L'\0')
-    {
-        subject.pop_back();
+        throwResult("Formatting the signing certificate subject", result);
     }
     if (subject != requiredSubject)
     {

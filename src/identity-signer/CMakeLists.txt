@@ -6,6 +6,8 @@ add_executable(
 )
 
 target_compile_features(bafx_identity_signer PRIVATE cxx_std_20)
+target_include_directories(bafx_identity_signer PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/windows/include")
 target_compile_definitions(
     bafx_identity_signer
     PRIVATE
