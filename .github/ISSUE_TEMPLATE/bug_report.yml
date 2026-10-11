@@ -1,0 +1,77 @@
+name: 问题反馈 / Bug report
+description: 描述问题，可上传运行日志和截图帮助定位 / Report a problem with optional logs and screenshots.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请描述遇到的问题。运行日志和截图可以帮助定位原因，附件为可选项，也可以提交后补充。
+        Describe the problem below. Logs and screenshots help diagnose it; attachments are optional and can be added later.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述 / Problem description
+      description: 请说明预期表现和实际表现 / Describe the expected and actual behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤与发生时间 / Steps and time
+      description: 请说明操作顺序、相关设置及发生时间，方便与日志对应 / Include steps, relevant settings and the time so we can match the logs.
+      placeholder: |
+        1. 启动程序 / Start the app
+        2. 修改设置或执行操作 / Change a setting or perform an action
+        3. 出现问题 / Observe the problem
+        发生时间（含时区） / Time (including time zone):
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境 / Environment
+      description: 请填写已知信息；Windows 版本可通过 winver 查看 / Fill in what you know; run winver to check your Windows version.
+      placeholder: |
+        Host / Control Center 版本 / Versions:
+        安装版或便携版 / Installer or Portable:
+        Windows 版本与 OS build / Windows version and OS build:
+        显卡与驱动版本 / GPU and driver:
+        显示器数量与 HDR 状态 / Display count and HDR:
+        背景模式 / Background mode:
+        OBS 与插件版本（如相关） / OBS and plugin versions (if relevant):
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        **如何获取日志 / How to collect logs**
+
+        - 复现后，在 Control Center 的“系统”页点击“打开日志目录”。上传 `ba-click-fx-desktop-support.log`、`BAFX.ControlCenter.log`，以及相关时段的 `.log.1` 至 `.log.3` 备份（如有）。可以打包为 ZIP；请先保留日志，再清理或重装。
+        - 便携版日志位于 EXE 目录；安装版位于安装目录的 `data` 子目录。安装或卸载失败时，另附错误框给出的完整路径下的安装日志。
+        - After reproducing the problem, open Control Center → System → Open log folder. Attach `ba-click-fx-desktop-support.log`, `BAFX.ControlCenter.log` and any relevant `.log.1`–`.log.3` backups. A ZIP is welcome; save the logs before cleaning or reinstalling.
+        - Portable logs are beside the executables; installed builds use the installation directory's `data` folder. For install/uninstall failures, also attach the installer log at the full path shown in the error dialog.
+
+        公开上传前，请检查日志中的用户名、本机路径以及截图中的个人信息。
+        Before posting publicly, check logs for usernames/local paths and screenshots for personal information.
+        更多说明 / More details: [SUPPORT.md](https://github.com/CialloKing/ba-click-fx-desktop/blob/main/SUPPORT.md)
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 运行或安装日志（可选） / Runtime or installer logs (optional)
+      description: 可将日志文件或 ZIP 拖入此栏，或使用附件按钮上传；也可以粘贴相关日志 / Drag log files or a ZIP into this field, use the attachment button, or paste relevant log output.
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图或录屏（可选） / Screenshots or recordings (optional)
+      description: 可拖入文件、粘贴截图或使用附件按钮上传。颜色、边框或特效缺失问题，建议附正常、异常及恢复后的画面，并标注对应时间 / Drag files, paste screenshots or use the attachment button. For color, border or missing-effect issues, include normal, affected and recovered views with their times when possible.
+    validations:
+      required: false

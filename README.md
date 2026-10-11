@@ -155,12 +155,13 @@ Spout2 只发送透明特效层，不包含桌面背景，WGC 不可用时也可
 **OBS 中没有特效？** 先确认 Host 已启动且未暂停，在“系统”页勾选“启用 OBS 透明特效输出”，检查发送及插件状态。
 再确认 OBS 选择了正确发送者、Spout2 来源置顶且可见，并按[上述步骤](#obs-与-spout2)检查透明合成与画布大小；空闲时全透明是正常现象，请点击或拖动验证。
 
-仍有问题，请到 [GitHub Issues](https://github.com/CialloKing/ba-click-fx-desktop/issues) 反馈，并附上：
+仍有问题，请填写 [问题反馈表单](https://github.com/CialloKing/ba-click-fx-desktop/issues/new?template=bug_report.yml)。可上传运行日志和截图帮助定位，也可提交后补充。建议提供：
 
 - Host 与 Control Center 版本、安装版或便携版。
 - Windows 版本与 OS build（可运行 `winver` 查看），以及显示器数量、HDR 状态；OBS 问题另附 OBS 与插件版本。
 - 复现步骤、发生时间、预期和实际结果，以及使用的背景模式。
-- `ba-click-fx-desktop-support.log`；若相关时段已轮转，再附对应的 `.log.1` 至 `.log.3`。便携版日志在 EXE 目录，安装版在安装目录的 `data` 子目录。
+- 在 Control Center“系统”页点击“打开日志目录”，上传 `ba-click-fx-desktop-support.log`、`BAFX.ControlCenter.log`；若相关时段已轮转，再附对应的 `.log.1` 至 `.log.3`。便携版日志在 EXE 目录，安装版在安装目录的 `data` 子目录；多个文件可打包为 ZIP。
+- 颜色、边框或特效缺失问题，附正常、异常及恢复后的截图或录屏，并标注对应时间。可将附件拖入表单，或使用附件按钮上传。
 
 安装或卸载失败时，请附错误框给出的完整路径下的安装日志。公开上传前检查日志中的用户名与本机路径。
 更多诊断说明见 [SUPPORT.md](SUPPORT.md)。

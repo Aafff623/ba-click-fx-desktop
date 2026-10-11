@@ -158,12 +158,13 @@ To stop effects completely, click Stop Host or use the Host's notification-area 
 **No effects in OBS?** Make sure the Host is running and not paused. On the System page, check Enable OBS transparent effects output and inspect sender/plugin status.
 In OBS, select the correct sender, keep the Spout2 source visible and on top, and check alpha compositing and canvas size using the [steps above](#obs-and-spout2). Idle frames are fully transparent; click or drag to test.
 
-If the issue persists, report it in [GitHub Issues](https://github.com/CialloKing/ba-click-fx-desktop/issues) with:
+If the issue persists, use the [bug report form](https://github.com/CialloKing/ba-click-fx-desktop/issues/new?template=bug_report.yml). You can upload runtime logs and screenshots to help diagnose it, or add them later. Please include what you can:
 
 - Host and Control Center versions, and whether you use the Installer or Portable package.
 - Windows version and OS build (run `winver`), display count, and HDR status; for OBS issues, include OBS and plugin versions.
 - Reproduction steps, the time of the issue, expected and actual behavior, and your background mode.
-- `ba-click-fx-desktop-support.log`; include relevant `.log.1` through `.log.3` files if the affected period has rotated out. Portable logs are beside the executables; installed builds use the installation directory's `data` folder.
+- In Control Center, open System → Open log folder and attach `ba-click-fx-desktop-support.log` and `BAFX.ControlCenter.log`; include relevant `.log.1` through `.log.3` files if the affected period has rotated out. Portable logs are beside the executables; installed builds use the installation directory's `data` folder. Multiple files can be packed into a ZIP.
+- For color, border or missing-effect issues, include screenshots or a recording of the normal, affected and recovered states with their times. Drag attachments into the form or use the attachment button.
 
 For installation or uninstallation failures, attach the installer log at the full path shown in the error dialog. Check logs for usernames and local paths before posting publicly.
 See [SUPPORT.md](SUPPORT.md) for further diagnostics.
