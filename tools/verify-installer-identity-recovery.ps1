@@ -317,6 +317,19 @@ Export-ModuleMember -Function @()
     $parent = Get-Content $pending -Raw | ConvertFrom-Json
     Assert-Probe (($parent.oldInstallState | ConvertTo-Json -Depth 12) -ceq $oldJson) 'The immutable old state changed.'
     Assert-Probe ($parent.rollbackInstallState.certificateThumbprint -ne $old.certificateThumbprint) 'Rollback reused the expired certificate.'
+    $notCommitted = $parent.PSObject.Copy()
+    $notCommitted.rollbackInstallState = $null
+    & $module { param($Parent, $Root)
+        $script:Registered = @($Parent.oldInstallState.packageFullName)
+        $script:Events.Clear()
+        if (Assert-PendingRollbackMayRemoveNewPackage -State $Parent -InstallRoot $Root)
+        { throw 'A failed Prepare was allowed to change the old registration.' }
+        Remove-NewPackages -State $Parent
+        Restore-PreviousPackage -State $Parent -InstallRoot $Root
+        if ($script:Events.Count -ne 0 -or $script:Registered.Count -ne 1)
+        { throw 'A failed Prepare changed its old registration.' }
+    } $notCommitted $root
+    $parent.filesCommitted = $true
     & $module { param($Parent, $Root, $Core)
         $script:ExpectedFullName = $Parent.oldInstallState.packageFullName
         $installRoot = $Root; $packageName = $Parent.packageName
@@ -348,6 +361,7 @@ Export-ModuleMember -Function @()
     Assert-Probe ($committed.transactionId -eq $parent.rollbackInstallState.transactionId) 'Rollback state was not committed.'
     Assert-Probe ((Get-FileHash $hostPath).Hash -eq $old.hostSha256) 'Recovery changed historical Host bytes.'
     $incomplete = Get-Content $pending -Raw | ConvertFrom-Json
+    $incomplete.filesCommitted = $true
     $incomplete.rollbackInstallState = $null
     Assert-ProbeFailure { & $module { param($Parent, $Root)
         $script:Events.Clear()

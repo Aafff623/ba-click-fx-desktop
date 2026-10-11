@@ -233,6 +233,12 @@ function Assert-PendingRollbackMayRemoveNewPackage
     {
         return $false
     }
+    if ([int]$State.schema -ge 3 -and -not [bool]$State.filesCommitted)
+    {
+        # Registration happens only after CommitFiles. A failed/interrupted
+        # Prepare must never remove or re-register the still-live old package.
+        return $false
+    }
     $commitState = if ($null -ne $State.PSObject.Properties['commitState'])
     {
         [string]$State.commitState
@@ -650,6 +656,10 @@ function Remove-NewPackages
         [object]$State
     )
 
+    if ([int]$State.schema -ge 3 -and -not [bool]$State.filesCommitted)
+    {
+        return
+    }
     $preexisting = @($State.preexistingPackageFullNames)
     if ($null -ne $State.oldInstallState)
     {
@@ -689,6 +699,10 @@ function Restore-PreviousPackage
     )
 
     if (Test-CompletedRollbackIdentity -State $State -InstallRoot $InstallRoot)
+    {
+        return
+    }
+    if ([int]$State.schema -ge 3 -and -not [bool]$State.filesCommitted)
     {
         return
     }
@@ -818,6 +832,10 @@ function Remove-PreviousPackageForReplacement
 
     if ([int]$State.schema -ge 3)
     {
+        if (-not [bool]$State.filesCommitted)
+        {
+            throw 'Files must be committed before replacing the previous package.'
+        }
         if ([string]::IsNullOrWhiteSpace($InstallRoot))
         {
             throw 'The protected install root is required before replacing a package.'
