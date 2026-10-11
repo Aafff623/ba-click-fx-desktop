@@ -8,6 +8,18 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot))
     $RepositoryRoot = Join-Path $PSScriptRoot '..'
 }
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+if ($PSVersionTable.PSEdition -ne 'Desktop')
+{
+    # Install state is written by Windows PowerShell 5.1. PowerShell 7 can
+    # deserialize ISO dates as DateTime, changing the protected JSON digest.
+    # Exercise the same serialization and crypto runtime as the installer.
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -RepositoryRoot $repositoryRoot
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "Identity recovery verification failed in Windows PowerShell: $LASTEXITCODE"
+    }
+    return
+}
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 . (Join-Path $repositoryRoot 'tools/installer/installer-state.ps1')
