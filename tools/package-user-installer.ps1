@@ -353,6 +353,7 @@ try
     }
 
     foreach ($scriptName in @(
+        'archive-install-log.ps1',
         'capture-user-context.ps1',
         'installer-diagnostics.ps1',
         'installer-state.ps1',

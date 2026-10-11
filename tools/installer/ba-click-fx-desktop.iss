@@ -140,6 +140,9 @@ const
 function GetFileAttributesW(lpFileName: String): Cardinal;
 external 'GetFileAttributesW@kernel32.dll stdcall';
 
+function GetCurrentProcessId(): Cardinal;
+external 'GetCurrentProcessId@kernel32.dll stdcall';
+
 var
   UserContextPath: String;
   MachineStatePath: String;
@@ -152,6 +155,7 @@ var
   RollbackRetainedRecovery: Boolean;
   SetupFailureExitCode: Integer;
   MachineInstallationSucceeded: Boolean;
+  SetupCompleted: Boolean;
   LastPowerShellFailureSummary: String;
   LastPowerShellRawOutput: String;
   LastPowerShellOutputError: String;
@@ -1371,6 +1375,12 @@ var
   PrimaryFailure: String;
   RollbackSucceeded: Boolean;
 begin
+  if CurStep = ssDone then
+  begin
+    SetupCompleted := MachineInstallationSucceeded and (SetupFailureExitCode = 0)
+      and (not RecoveryRequired);
+    Exit;
+  end;
   if CurStep <> ssPostInstall then
   begin
     Exit;
@@ -1572,11 +1582,46 @@ begin
   end;
 end;
 
+procedure ArchiveCompletedInstallerLog;
+var
+  LogPath: String;
+  ScriptPath: String;
+  Arguments: String;
+  ResultCode: Integer;
+begin
+  if not SetupCompleted then
+  begin
+    Exit;
+  end;
+  LogPath := ExpandConstant('{log}');
+  if (LogPath = '') or (not FileExists(LogPath)) then
+  begin
+    Exit;
+  end;
+  ScriptPath := ExpandConstant('{app}\Installer\archive-install-log.ps1');
+  Arguments := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
+    QuoteArgument(ScriptPath) +
+    ' -SourceLogPath ' + QuoteArgument(LogPath) +
+    ' -InstallDirectory ' + QuoteArgument(ExpandConstant('{app}')) +
+    ' -SetupProcessId ' + IntToStr(GetCurrentProcessId());
+  // Inno writes its closing records after DeinitializeSetup. The installed
+  // helper survives {tmp} cleanup and moves the complete log after process exit.
+  Log('Installer log archive scheduled; source=' + LogPath +
+    '; directory=' + ExpandConstant('{app}\data'));
+  if not Exec(ExpandConstant('{#PowerShellPath}'), Arguments, '', SW_HIDE,
+    ewNoWait, ResultCode) then
+  begin
+    Log('Installer log archive could not start; original log retained. Win32 error ' +
+      IntToStr(ResultCode) + ': ' + SysErrorMessage(ResultCode));
+  end;
+end;
+
 procedure DeinitializeSetup;
 begin
   CleanupUncommittedInstallArtifacts;
   CleanupCurrentRecoveryScripts;
   DeleteTransientState;
+  ArchiveCompletedInstallerLog;
 end;
 
 procedure DeinitializeUninstall;

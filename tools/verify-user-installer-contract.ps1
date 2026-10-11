@@ -301,6 +301,7 @@ function Test-PowerShellScriptContracts
 {
     $scriptPaths = @(
         'tools/package-user-installer.ps1',
+        'tools/installer/archive-install-log.ps1',
         'tools/installer/capture-user-context.ps1',
         'tools/installer/installer-diagnostics.ps1',
         'tools/installer/installer-state.ps1',
@@ -756,10 +757,65 @@ function Test-UninstallerProcessPathFilter
         -Description 'installed Host process still running'
 }
 
+function Test-InstallerLogArchive
+{
+    $archiveAst = Get-ParsedScript -RelativePath 'tools/installer/archive-install-log.ps1'
+    . (Resolve-RepositoryPath -RelativePath 'tools/installer/protected-paths.ps1')
+    . ([scriptblock]::Create((Get-FunctionText -Ast $archiveAst -Name 'Move-CompletedInstallerLog')))
+    $temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $temporaryRoot = Join-Path $temporaryParent ('bafx-log-archive-' + [Guid]::NewGuid().ToString('N'))
+    try
+    {
+        $logDirectory = Join-Path $temporaryRoot 'data'
+        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+        $sourcePath = Join-Path $temporaryRoot 'Setup Log.log'
+        $bytes = [Text.Encoding]::Unicode.GetBytes("安装诊断`r`nFinal Setup closing record`r`n")
+        [IO.File]::WriteAllBytes($sourcePath, $bytes)
+        $firstArchive = Move-CompletedInstallerLog -SourcePath $sourcePath `
+            -LogDirectory $logDirectory -WaitSeconds 1
+        Assert-True -Condition (-not [IO.File]::Exists($sourcePath)) `
+            -Message 'Successful log archive must remove the original.'
+        Assert-True -Condition ([Convert]::ToBase64String([IO.File]::ReadAllBytes($firstArchive)) -eq
+            [Convert]::ToBase64String($bytes)) -Message 'Archive must retain every log byte, including final records.'
+        [IO.File]::WriteAllBytes($sourcePath, $bytes)
+        $writer = [IO.File]::Open($sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Write,
+            [IO.FileShare]::Read)
+        try
+        {
+            $blocked = $false
+            try
+            {
+                Move-CompletedInstallerLog -SourcePath $sourcePath `
+                    -LogDirectory $logDirectory -WaitSeconds 1 | Out-Null
+            }
+            catch { $blocked = $true }
+            Assert-True -Condition ($blocked -and [IO.File]::Exists($sourcePath)) `
+                -Message 'A log that still has a writer must be retained.'
+            Assert-True -Condition (@(Get-ChildItem -LiteralPath $logDirectory -File).Count -eq 1) `
+                -Message 'A blocked archive must not leave partial logs.'
+        }
+        finally { $writer.Dispose() }
+        $secondArchive = Move-CompletedInstallerLog -SourcePath $sourcePath `
+            -LogDirectory $logDirectory -WaitSeconds 1
+        Assert-True -Condition ($firstArchive -ne $secondArchive -and [IO.File]::Exists($firstArchive)) `
+            -Message 'Repeated installs must not overwrite earlier logs.'
+    }
+    finally
+    {
+        $resolvedRoot = [IO.Path]::GetFullPath($temporaryRoot)
+        if ($resolvedRoot.StartsWith($temporaryParent, [StringComparison]::OrdinalIgnoreCase) -and
+            [IO.Path]::GetFileName($resolvedRoot).StartsWith('bafx-log-archive-', [StringComparison]::Ordinal))
+        {
+            Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Test-InstallerScriptWhitelist
 {
     $installerRoot = Resolve-RepositoryPath -RelativePath 'tools/installer'
     $expectedFiles = @(
+        'archive-install-log.ps1',
         'ba-click-fx-desktop.iss',
         'capture-user-context.ps1',
         'ChineseSimplified.isl',
@@ -780,6 +836,7 @@ function Test-InstallerScriptWhitelist
     Assert-TextContains `
         -Text $packager `
         -Pattern (('\$scriptName\s+in\s+@\(\s*' +
+            '\x27archive-install-log\.ps1\x27\s*,\s*' +
             '\x27capture-user-context\.ps1\x27\s*,\s*' +
             '\x27installer-diagnostics\.ps1\x27\s*,\s*' +
             '\x27installer-state\.ps1\x27\s*,\s*' +
@@ -4003,6 +4060,7 @@ Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
 Test-CertificateLifecycleBoundaryContract
 Test-VersionMapping
+Test-InstallerLogArchive
 Test-InstallerScriptWhitelist
 Test-CompressionRuntimeColdStart
 Test-InnoPayloadContract
