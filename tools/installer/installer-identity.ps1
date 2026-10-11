@@ -373,12 +373,100 @@ function Copy-ReadyRollbackPackage
         -ExpectedSha256 ([string]$journal.packageSha256)
 }
 
+function Test-CompletedRollbackIdentity
+{
+    param([Parameter(Mandatory = $true)][object]$State,
+        [Parameter(Mandatory = $true)][string]$InstallRoot)
+
+    if ($null -eq $State.PSObject.Properties['rollbackComplete'] -or
+        -not [bool]$State.rollbackComplete)
+    {
+        return $false
+    }
+    if ([int]$State.schema -lt 3)
+    {
+        throw 'A legacy transaction cannot claim completed rollback.'
+    }
+    $selected = [bool]$State.filesCommitted -and $null -ne $State.oldInstallState
+    $expected = if ($selected) { $State.rollbackInstallState } else { $State.oldInstallState }
+    $statePath = Join-Path $InstallRoot 'Installer\INSTALL-STATE.json'
+    $backupPath = "$statePath.bak"
+    if ($null -eq $expected)
+    {
+        if ($selected -or (Test-Path -LiteralPath $statePath) -or
+            (Test-Path -LiteralPath $backupPath))
+        {
+            throw 'Completed rollback has an unexpected install-state pair.'
+        }
+    }
+    else
+    {
+        foreach ($path in @($statePath, $backupPath))
+        {
+            Assert-NoReparsePath -Path $path
+            Assert-ProtectedStateAcl -Path $path
+        }
+        Assert-InstallStateRawPair -PrimaryPath $statePath -BackupPath $backupPath
+        $live = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if ((Get-StateDigest -Value $expected) -ine [string]$expected.stateDigest -or
+            (Get-StateDigest -Value $live) -ine [string]$expected.stateDigest -or
+            [string]$live.stateDigest -ine [string]$expected.stateDigest)
+        {
+            throw 'Completed rollback no longer matches its protected install state.'
+        }
+        $hostPath = Join-Path $InstallRoot 'ba-click-fx-desktop.exe'
+        Assert-NoReparsePath -Path $hostPath
+        if ((Get-FileHash -LiteralPath $hostPath -Algorithm SHA256).Hash -ine
+            [string]$expected.hostSha256)
+        {
+            throw 'Completed rollback no longer matches its previous Host.'
+        }
+        $fileName = [string]$expected.packageFile
+        if ([IO.Path]::GetFileName($fileName) -cne $fileName -or
+            $fileName.Contains('..') -or $fileName -notmatch '\.msix$')
+        {
+            throw 'Completed rollback has an unsafe package file name.'
+        }
+        $packagePath = Join-Path (Join-Path $InstallRoot 'Identity') $fileName
+        Assert-NoReparsePath -Path $packagePath
+        Assert-RecordedPackageSigner -State $expected -PackagePath $packagePath
+        if ($selected)
+        {
+            $signature = Get-AuthenticodeSignature -LiteralPath $packagePath
+            if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+                $null -eq $signature.SignerCertificate -or
+                $signature.SignerCertificate.Thumbprint -ine [string]$expected.certificateThumbprint)
+            {
+                throw 'Completed rollback no longer has a trusted package.'
+            }
+        }
+    }
+    $expectedNames = @($State.preexistingPackageFullNames)
+    if ($selected)
+    {
+        $expectedNames = @([string]$expected.packageFullName)
+    }
+    $actualNames = @(Get-AppxPackage -User ([string]$State.userSid) `
+        -Name ([string]$State.packageName) -ErrorAction Stop |
+        ForEach-Object { [string]$_.PackageFullName })
+    if ($actualNames.Count -ne $expectedNames.Count -or
+        @($actualNames | Where-Object { $expectedNames -notcontains $_ }).Count -ne 0)
+    {
+        throw 'Completed rollback no longer matches its previous package registration.'
+    }
+    return $true
+}
+
 function Complete-RollbackIdentity
 {
     param([Parameter(Mandatory = $true)][object]$State,
         [Parameter(Mandatory = $true)][string]$InstallRoot)
 
     if ([int]$State.schema -lt 3)
+    {
+        return
+    }
+    if (Test-CompletedRollbackIdentity -State $State -InstallRoot $InstallRoot)
     {
         return
     }

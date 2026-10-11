@@ -5078,6 +5078,12 @@ function Invoke-PendingRollbackCleanup
     if ([int]$State.schema -ge 3)
     {
         Complete-RollbackIdentity -State $State -InstallRoot $InstallRoot
+        # Publish completion before deleting any recovery material. A crash
+        # during cleanup must verify the restored live state, not restore again
+        # from backups that may already have been removed.
+        $State | Add-Member -NotePropertyName rollbackComplete -NotePropertyValue $true -Force
+        $null = Test-CompletedRollbackIdentity -State $State -InstallRoot $InstallRoot
+        Write-ProtectedJson -Path $PendingPath -Value $State -ReadSid ([string]$State.userSid)
     }
     Remove-PendingPackageFiles `
         -State $State `
@@ -5229,6 +5235,14 @@ if ($Phase -eq 'Rollback')
         -State $pendingState `
         -InstallRoot $installRoot `
         -PayloadDirectory $script:PayloadRoot
+
+    if (Test-CompletedRollbackIdentity -State $pendingState -InstallRoot $installRoot)
+    {
+        $script:InstallerStep = 'retry-completed-rollback-cleanup'
+        Invoke-PendingRollbackCleanup -State $pendingState -InstallRoot $installRoot `
+            -PayloadRoot $script:PayloadRoot -PendingPath $machineStateFullPath
+        exit 0
+    }
 
     # Finalize writes the install-state pair before it marks the journal as
     # committed. A crash in either direction must be classified explicitly:

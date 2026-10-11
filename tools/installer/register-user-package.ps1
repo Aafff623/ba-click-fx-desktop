@@ -229,6 +229,10 @@ function Assert-PendingRollbackMayRemoveNewPackage
         [string]$InstallRoot
     )
 
+    if (Test-CompletedRollbackIdentity -State $State -InstallRoot $InstallRoot)
+    {
+        return $false
+    }
     $commitState = if ($null -ne $State.PSObject.Properties['commitState'])
     {
         [string]$State.commitState
@@ -684,6 +688,10 @@ function Restore-PreviousPackage
         [string]$InstallRoot
     )
 
+    if (Test-CompletedRollbackIdentity -State $State -InstallRoot $InstallRoot)
+    {
+        return
+    }
     if ($null -eq $State.oldInstallState)
     {
         return

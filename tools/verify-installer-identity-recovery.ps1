@@ -1,8 +1,12 @@
 [CmdletBinding()]
-param([string]$RepositoryRoot = (Join-Path $PSScriptRoot '..'))
+param([string]$RepositoryRoot)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot))
+{
+    $RepositoryRoot = Join-Path $PSScriptRoot '..'
+}
 $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -167,6 +171,7 @@ try
         userSid = $old.installedUserSid; packageName = $old.packageName
         applicationId = $old.applicationId; publisher = $old.publisher; packageVersion = '0.2.20.0'
         productVersion = '0.2.20'; preexistingPackageFullNames = @($old.packageFullName)
+        packageFile = 'new-candidate.msix'; packagePath = (Join-Path $root 'Identity\new-candidate.msix')
         oldInstallState = $old; rollbackIdentity = $null; rollbackInstallState = $null
         ownedCertificateThumbprints = $fresh.Thumbprint
     }
@@ -176,10 +181,12 @@ try
         Get-ProbeFunction 'tools/installer/install-machine.ps1' @('New-StateWithDigest', 'Join-Ledger',
             'Get-ExplicitlyOwnedCertificateThumbprints', 'Write-Utf8NoBom', 'Copy-VerifiedInstallerFile',
             'Assert-FileHash', 'Get-IdentityTemplateContentHash', 'Get-CertificateSha256', 'Assert-IdentityIntegrityMaterial',
-            'Assert-InstallStatePair', 'Assert-InstallStateObject', 'Read-OldInstallState')
+            'Assert-InstallStatePair', 'Assert-InstallStateObject', 'Read-OldInstallState',
+            'Invoke-PendingRollbackCleanup', 'Remove-PendingPackageFiles')
         Get-ProbeFunction 'tools/installer/unregister-machine.ps1' @('Get-UninstallPhaseRank', 'Assert-InstallStateIntegrity')
         Get-ProbeFunction 'tools/installer/register-user-package.ps1' @('Restore-PreviousPackage',
-            'Assert-PreviousPackageMaterial', 'Get-InstallerFileHash', 'Remove-PreviousPackageForReplacement', 'Remove-NewPackages')
+            'Assert-PreviousPackageMaterial', 'Get-InstallerFileHash', 'Remove-PreviousPackageForReplacement',
+            'Remove-NewPackages', 'Assert-PendingRollbackMayRemoveNewPackage', 'Get-InstallStatePairStatus')
         (Get-Command Write-ProbeSignedPackage).Definition.Insert(0, "function Write-ProbeSignedPackage {`n") + "`n}"
     ) -join "`n"
     $tokens = $null
@@ -201,6 +208,7 @@ $script:Registered = @()
 $script:Events = New-Object Collections.Generic.List[string]
 $script:FailNextAdd = $false
 $script:TrustMissing = $false
+$script:FailCleanup = $false
 function Assert-NoReparsePath { param($Path, [switch]$AllowMissing) }
 function Assert-ProtectedStateAcl { param($Path) }
 function Write-ProtectedJson { param($Path, $Value, $ReadSid)
@@ -235,6 +243,13 @@ function Write-Result { param($Succeeded, $Package, $State, $ErrorMessage)
     $script:RegistrationSucceeded = $Succeeded }
 function Stop-RegistrationWithFailure { param($ErrorRecord, $Step, $ResultErrorMessage)
     $script:FailureStep = $Step }
+function Remove-PreparedCertificateIfUnused { param($State, $InstallRoot) }
+function Remove-EmptyRollbackDirectories { param($InstallRoot) }
+function Remove-CompletedRollbackEvidence { param($InstallRoot, $TransactionId)
+    $evidence = Join-Path $InstallRoot ('.rollback\' + $TransactionId)
+    if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $evidence) {
+        Remove-Item -LiteralPath $evidence -Recurse -Force }
+    if ($script:FailCleanup) { $script:FailCleanup = $false; throw 'Injected interruption after evidence deletion.' } }
 function Assert-IdentityPayload { param($InstallRoot, $PendingStatePath, $PendingStateSeed,
     $IdentityProductVersion, $IdentityPackageVersion)
     $journal = Get-StatePropertiesWithoutDigest $PendingStateSeed
@@ -319,10 +334,37 @@ Export-ModuleMember -Function @()
         Remove-PreviousPackageForReplacement -State $Parent -InstallRoot $Root
     } $incomplete $root }
     Assert-Probe ((& $module { $script:Events.Count }) -eq 0) 'Incomplete rollback changed registrations.'
-    $parent.rollbackInstallState.certificateSha256 = '0' * 64
+    $damagedRollback = Get-Content $pending -Raw | ConvertFrom-Json
+    $damagedRollback.rollbackInstallState.certificateSha256 = '0' * 64
     Assert-ProbeFailure { & $module { param($Parent, $Root)
         Read-RollbackIdentityJournal -State $Parent -InstallRoot $Root -RequireReady
-    } $parent $root }
+    } $damagedRollback $root }
+    # Exercise the deletion window after a fully restored state. Retry must
+    # use the protected completion marker even when the child journal is gone.
+    & $module { $script:FailCleanup = $true }
+    $cleanupError = ''
+    try
+    {
+        & $module { param($Parent, $Root, $Payload, $Pending)
+            Invoke-PendingRollbackCleanup -State $Parent -InstallRoot $Root -PayloadRoot $Payload -PendingPath $Pending
+        } $parent $root $payload $pending
+    }
+    catch
+    {
+        $cleanupError = $_.Exception.Message
+    }
+    Assert-Probe ($cleanupError -eq 'Injected interruption after evidence deletion.') "Unexpected cleanup failure: $cleanupError"
+    $completed = Get-Content $pending -Raw | ConvertFrom-Json
+    Assert-Probe ([bool]$completed.rollbackComplete) 'Cleanup did not persist rollback completion.'
+    & $module { param($Parent, $Root, $Payload, $Pending)
+        $script:Events.Clear()
+        if (Assert-PendingRollbackMayRemoveNewPackage -State $Parent -InstallRoot $Root)
+        { throw 'Completed rollback was allowed to remove its restored registration.' }
+        Restore-PreviousPackage -State $Parent -InstallRoot $Root
+        Invoke-PendingRollbackCleanup -State $Parent -InstallRoot $Root -PayloadRoot $Payload -PendingPath $Pending
+        if ($script:Events.Count -ne 0) { throw 'Cleanup retry changed the restored registration.' }
+    } $completed $root $payload $pending
+    Assert-Probe (-not (Test-Path -LiteralPath $pending)) 'Cleanup retry left its pending journal.'
     $damaged = $oldJson | ConvertFrom-Json
     $damaged.certificateSha256 = '0' * 64
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $damaged -PackagePath $package }
