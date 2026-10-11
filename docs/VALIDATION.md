@@ -908,6 +908,31 @@ Full 候选安装器位于 `artifacts/local/self-signing-recovery-0.2.20-2026101
 Windows 11 包身份、无边框授权与实际画面分别保持 **Not Run**；当前已安装程序、注册和证书未被修改。
 本轮交付是本地候选，不作为正式发布或硬件验收证据。
 
+### 5.10 0.2.20 发布检查（2026-10-11）
+
+发布目录为 `artifacts/local/release-0.2.20-20261011/`，与上节候选记录分开保存。本地 Windows 10 build
+19045、Visual Studio 2026、Windows SDK `10.0.28000.0` 的 Full/Slim `--clean-first` 构建通过；两份
+CMake cache 和生成的 Host 工程均核对到同一 SDK。Full 完整 CTest 轮为 `45/46`，耗时 `117.93 s`，
+唯一失败项为依赖交互桌面输入的 `hotkey_process_boundary`。Slim 其余项目 `44/44` 通过，耗时 `94.87 s`。
+热键原流程曾分别复测通过（Full `12.35 s`、Slim `12.37 s`），后续复测仍有输入触发超时，保留各轮日志；
+测试仅补充超时行号、捕获状态与动作错误诊断，未放宽断言或超时。
+
+文档检查覆盖 8 个文档，通过。Full 安装器由 Inno Setup `6.7.3` 编译；携带 `0.2.20.0` unsigned
+identity template 和 native signer，不携带证书或私钥。便携包通过文件清单/哈希、PE 依赖、版本、Host
+临时目录启动和控制中心启动边界检查。公开资产固定为 Full 安装器、便携包及各自校验文件，共四个；Slim
+只构建和测试。
+
+| 资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `ba-click-fx-desktop-0.2.20-setup-windows-x64.exe` | 4237654 | `3B32F77E53550A0EFB1379EE6041669478F48E1609954409771EA128298434F8` |
+| `ba-click-fx-desktop-0.2.20-setup-windows-x64.exe.sha256` | 114 | `8450E6552A4C8D4260E07CE089EF03DC43E6AABB3F5169BEA2088A0A1AD09A2D` |
+| `ba-click-fx-desktop-0.2.20-Portable-windows-x64.zip` | 1567853 | `9742F3FE5AAE67563BB204880A1B941216C985A82928E1E75AC9F7786F4E2FE0` |
+| `ba-click-fx-desktop-0.2.20-Portable-windows-x64.zip.sha256` | 117 | `836970208249BD00BB2A04D96ABE6EA1193FB699FFC79E81ADBAD1824A0441D8` |
+
+本节记录本地发布检查，不替代上节的隔离安装/激活与 Windows 11 **Not Run** 项，也不确认 Issue #5 的
+视觉现象已解决。本机原安装、Appx 注册和证书存储未修改。发布后的远端提交、标签、CI、四份资产与下载
+复算记录保存至发布目录的 `release-verification.md`。
+
 ## 6. 需求追踪
 
 | 合同 | ADR | Spike | Validation suite |
