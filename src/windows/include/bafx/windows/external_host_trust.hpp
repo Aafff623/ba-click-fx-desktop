@@ -45,6 +45,8 @@ struct ExternalHostTrustResult
     std::string observedPackageSha256{};
     std::string expectedCertificateSha256{};
     std::string observedCertificateSha256{};
+    std::string certificateCheck{};
+    std::string certificateReason{};
 };
 
 [[nodiscard]] ExternalHostTrustResult queryExternalHostTrust(

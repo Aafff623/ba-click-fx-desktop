@@ -1,6 +1,7 @@
 #include "bafx/windows/external_host_trust.hpp"
 
 #include "bafx/windows/detail/certificate_subject.hpp"
+#include "bafx/windows/detail/certificate_usage.hpp"
 
 #include "bafx/windows/error.hpp"
 #include "bafx/windows/portable_paths.hpp"
@@ -1083,31 +1084,6 @@ void stripUtf8Bom(std::string& contents) noexcept
     return subject == winrt::to_hstring(expectedSubject).c_str();
 }
 
-[[nodiscard]] bool certificateAllowsCodeSigning(PCCERT_CONTEXT certificate)
-{
-    DWORD size = 0U;
-    if (!CertGetEnhancedKeyUsage(certificate, 0U, nullptr, &size))
-    {
-        return false;
-    }
-    std::vector<std::byte> buffer(size);
-    auto* usage = reinterpret_cast<PCERT_ENHKEY_USAGE>(buffer.data());
-    if (!CertGetEnhancedKeyUsage(certificate, 0U, usage, &size))
-    {
-        return false;
-    }
-    constexpr std::string_view expectedOid = "1.3.6.1.5.5.7.3.3";
-    for (DWORD index = 0U; index < usage->cUsageIdentifier; ++index)
-    {
-        if (usage->rgpszUsageIdentifier[index] != nullptr
-            && expectedOid == usage->rgpszUsageIdentifier[index])
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 [[nodiscard]] CertificateContext findCertificate(
     HCERTSTORE store,
     const std::span<const std::byte> sha1)
@@ -1130,19 +1106,23 @@ void stripUtf8Bom(std::string& contents) noexcept
     ExternalHostTrustResult& result,
     HRESULT& error)
 {
+    result.certificateCheck = "signature";
     WinTrustState trust(packagePath);
     if (trust.result() != ERROR_SUCCESS)
     {
         error = static_cast<HRESULT>(trust.result());
+        result.certificateReason = "winverifytrust-failed";
         return ExternalHostTrustStatus::PackageSignatureInvalid;
     }
     PCCERT_CONTEXT signer = trust.signerCertificate();
     if (signer == nullptr)
     {
         error = TRUST_E_NOSIGNATURE;
+        result.certificateReason = "signer-certificate-missing";
         return ExternalHostTrustStatus::PackageSignatureInvalid;
     }
 
+    result.certificateCheck = "signer-identity";
     const std::optional<std::vector<std::byte>> expectedThumbprint =
         parseHex(state.certificateThumbprint);
     if (!expectedThumbprint.has_value())
@@ -1162,15 +1142,27 @@ void stripUtf8Bom(std::string& contents) noexcept
         || !certificateSubjectMatches(signer, state.publisher))
     {
         error = E_ACCESSDENIED;
+        result.certificateReason = "signer-identity-mismatch";
         return ExternalHostTrustStatus::SignerCertificateMismatch;
     }
-    if (CertVerifyTimeValidity(nullptr, signer->pCertInfo) != 0
-        || !certificateAllowsCodeSigning(signer))
+    result.certificateCheck = "validity";
+    const LONG validity = CertVerifyTimeValidity(nullptr, signer->pCertInfo);
+    if (validity != 0)
     {
         error = CERT_E_EXPIRED;
+        result.certificateReason = validity < 0 ? "not-yet-valid" : "expired";
+        return ExternalHostTrustStatus::CertificateInvalid;
+    }
+    result.certificateCheck = "usage";
+    error = detail::certificateCodeSigningUsage(signer);
+    if (FAILED(error))
+    {
+        result.certificateReason = error == CERT_E_WRONG_USAGE
+            ? "code-signing-usage-missing" : "usage-query-failed";
         return ExternalHostTrustStatus::CertificateInvalid;
     }
 
+    result.certificateCheck = "trusted-store";
     CertificateStore trustedPeople(L"TrustedPeople");
     CertificateContext trusted = findCertificate(
         trustedPeople.get(),
@@ -1183,9 +1175,11 @@ void stripUtf8Bom(std::string& contents) noexcept
                signer->cbCertEncoded) != 0)
     {
         error = CRYPT_E_NOT_FOUND;
+        result.certificateReason = "trusted-certificate-missing-or-mismatched";
         return ExternalHostTrustStatus::CertificateStoreMismatch;
     }
 
+    result.certificateCheck = "private-key-cleanup";
     CertificateStore privateStore(L"My");
     CertificateContext privateCertificate = findCertificate(
         privateStore.get(),
@@ -1194,9 +1188,12 @@ void stripUtf8Bom(std::string& contents) noexcept
     {
         // The one-use target-machine signing key must not survive Prepare.
         error = E_ACCESSDENIED;
+        result.certificateReason = "temporary-signing-certificate-remains";
         return ExternalHostTrustStatus::CertificateStoreMismatch;
     }
     error = S_OK;
+    result.certificateCheck = "complete";
+    result.certificateReason = "trusted";
     return ExternalHostTrustStatus::Trusted;
 }
 
@@ -1490,6 +1487,11 @@ std::string externalHostTrustDiagnostic(const ExternalHostTrustResult& result)
     stream << "Package.ExternalHostTrust="
            << externalHostTrustStatusName(result.status)
            << ";HRESULT=" << hexHresult(result.error);
+    if (!result.certificateCheck.empty())
+    {
+        stream << ";CertificateCheck=" << result.certificateCheck
+               << ";CertificateReason=" << result.certificateReason;
+    }
     if (!result.statePath.empty())
     {
         stream << ";StatePath=" << result.statePath;

@@ -850,6 +850,16 @@ void appendBorderlessCaptureAccessCheck(
                 "WGC.BorderlessAccess.ExternalHostTrust.HRESULT",
                 values[6]},
             bafx::windows::DiagnosticField{
+                "WGC.BorderlessAccess.ExternalHostTrust.Check",
+                result.externalHostTrust.has_value()
+                    ? std::string_view(result.externalHostTrust->certificateCheck)
+                    : std::string_view("not-checked")},
+            bafx::windows::DiagnosticField{
+                "WGC.BorderlessAccess.ExternalHostTrust.Reason",
+                result.externalHostTrust.has_value()
+                    ? std::string_view(result.externalHostTrust->certificateReason)
+                    : std::string_view("not-checked")},
+            bafx::windows::DiagnosticField{
                 "WGC.BorderlessAccess.ExternalHostTrust.StatePath",
                 result.externalHostTrust.has_value()
                     ? std::string_view(result.externalHostTrust->statePath)

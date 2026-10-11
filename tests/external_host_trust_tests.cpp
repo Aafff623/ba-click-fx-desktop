@@ -2,6 +2,7 @@
 
 #include "bafx/windows/external_host_trust.hpp"
 #include "bafx/windows/detail/certificate_subject.hpp"
+#include "bafx/windows/detail/certificate_usage.hpp"
 
 #include <string>
 #include <vector>
@@ -24,6 +25,28 @@ std::wstring formattedSubject(const wchar_t* name, const DWORD flags)
     std::wstring subject;
     BAFX_CHECK(SUCCEEDED(bafx::windows::detail::formatCertificateSubject(&context, subject)));
     return subject;
+}
+
+BAFX_TEST(certificate_usage_preserves_query_error_and_wrong_usage)
+{
+    const auto failedQuery = +[](PCCERT_CONTEXT, DWORD, PCERT_ENHKEY_USAGE, DWORD*) -> BOOL
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    };
+    const auto missingUsage = +[](PCCERT_CONTEXT, DWORD, PCERT_ENHKEY_USAGE usage, DWORD* size) -> BOOL
+    {
+        *size = sizeof(CERT_ENHKEY_USAGE);
+        if (usage != nullptr)
+        {
+            *usage = {};
+        }
+        return TRUE;
+    };
+    BAFX_CHECK(bafx::windows::detail::certificateCodeSigningUsage(nullptr, failedQuery)
+        == E_ACCESSDENIED);
+    BAFX_CHECK(bafx::windows::detail::certificateCodeSigningUsage(nullptr, missingUsage)
+        == CERT_E_WRONG_USAGE);
 }
 
 }
