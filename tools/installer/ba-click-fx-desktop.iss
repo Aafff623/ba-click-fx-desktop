@@ -99,6 +99,10 @@ english.RollbackPendingInstallation=Rolling back the pending installation
 chinesesimplified.RollbackPendingInstallation=回滚未完成的安装
 english.RemoveMachineIdentity=Removing the machine identity
 chinesesimplified.RemoveMachineIdentity=移除计算机身份
+english.StopRunningApplications=Closing running applications
+chinesesimplified.StopRunningApplications=关闭正在运行的应用程序
+english.RuntimeStopScriptUnavailable=The process shutdown script is missing or unsupported. Installation files and recovery state were retained; repair or upgrade the installation before uninstalling.
+chinesesimplified.RuntimeStopScriptUnavailable=进程关闭脚本缺失或不受支持。安装文件和恢复状态已保留；请先修复或升级安装，再执行卸载。
 english.RollbackRecovery=Rollback also failed. The installation files and recovery state were retained; reopen Control Center to repair the installation.
 chinesesimplified.RollbackRecovery=回滚也失败了。安装文件和恢复状态已保留；请重新打开控制中心修复安装。
 english.FinalizeRepair=The package was committed, but final cleanup needs another repair pass from Control Center.
@@ -1637,6 +1641,19 @@ begin
   DeleteTransientState;
 end;
 
+function SupportsProcessStop(const ScriptPath: String): Boolean;
+var
+  ScriptText: AnsiString;
+begin
+  // A pending upgrade can still expose an older live script. Check the
+  // supported entry point before passing a parameter that it cannot accept.
+  Result := False;
+  if FileExists(ScriptPath) and LoadStringFromFile(ScriptPath, ScriptText) then
+  begin
+    Result := Pos('[switch]$StopProcessesOnly', String(ScriptText)) > 0;
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ExitCode: Integer;
@@ -1652,7 +1669,7 @@ begin
   begin
     Exit;
   end;
-  InstallRoot := ExpandConstant('{app}');
+  InstallRoot := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
   SetupFailureExitCode := 1001;
   PayloadRoot := AddBackslash(InstallRoot) + '.staging\current';
   InstallerRoot := AddBackslash(InstallRoot) + 'Installer';
@@ -1661,6 +1678,44 @@ begin
   InstallStatePath := AddBackslash(InstallerRoot) + 'INSTALL-STATE.json';
   UninstallCompleteMarkerPath :=
     AddBackslash(InstallerRoot) + 'UNINSTALL-COMPLETE.json';
+  // Rollback may replace live binaries too, so stop runtime processes before
+  // any recovery, identity, or payload operation. Original-user IPC is not
+  // needed: the elevated helper validates exact image paths across sessions.
+  ScriptPath := ResolveRollbackScript(
+    InstallRoot, StagedInstallerRoot, 'unregister-machine.ps1');
+  if not SupportsProcessStop(ScriptPath) then
+  begin
+    ScriptPath := AddBackslash(InstallerRoot) + 'unregister-machine.ps1';
+  end;
+  if SupportsProcessStop(ScriptPath) then
+  begin
+    UninstallProgressForm.StatusLabel.Caption := CustomMessage('StopRunningApplications');
+    if not RunPowerShell(
+      ScriptPath,
+      '-StopProcessesOnly -InstallDirectory ' + QuoteArgument(InstallRoot),
+      False, '', ExitCode) then
+    begin
+      RaiseInstallerFailure(
+        FormatPowerShellFailure(
+          CustomMessage('StopRunningApplications'), False, ExitCode), 1001);
+    end;
+    if ExitCode <> 0 then
+    begin
+      RaiseInstallerFailure(
+        FormatPowerShellFailure(
+          CustomMessage('StopRunningApplications'), True, ExitCode), 1001);
+    end;
+  end
+  else if FileExists(AddBackslash(InstallRoot) + 'ba-click-fx-desktop.exe') or
+    FileExists(AddBackslash(InstallRoot) + 'BAFX.ControlCenter.exe') or
+    FileExists(InstallStatePath) or FileExists(InstallStatePath + '.bak') or
+    FileExists(MachineStatePath) then
+  begin
+    // A failed first install with no live binaries or state still uses the
+    // existing payload-only cleanup below; a real installation must not bypass
+    // process verification when its helper is missing.
+    RaiseInstallerFailure(CustomMessage('RuntimeStopScriptUnavailable'), 1001);
+  end;
   UserContextPath := CreateOriginalUserStatePath();
   RegistrationResultPath := CreateOriginalUserStatePath();
   if FileExists(MachineStatePath) then

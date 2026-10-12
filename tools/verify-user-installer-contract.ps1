@@ -854,6 +854,40 @@ Export-ModuleMember -Function @()
     }
 }
 
+function Test-UninstallerShutdownIntegrationContract
+{
+    $uninstaller = Read-RepositoryText -RelativePath 'tools/installer/unregister-machine.ps1'
+    Assert-TextContains -Text $uninstaller `
+        -Pattern '(?s)if\s*\(\$StopProcessesOnly\)\s*\{\s*#[^}]*Stop-InstalledProcesses\s+-InstallRoot\s+\$installRoot\s+exit\s+0\s*\}\s*\$statePath\s*=' `
+        -Description 'process-only entry returns before reading or changing install state'
+    Assert-TextContains -Text $uninstaller `
+        -Pattern 'Stop-InstalledProcesses -InstallRoot \$installRoot\s*\$uninstallJournal = Read-UninstallJournal' `
+        -Description 'direct uninstall closes processes before writing its journal'
+    Assert-TextContains -Text $uninstaller `
+        -Pattern '(?s)ensure-host-process-stopped.*Assert-ExpectedProcessIsStopped.*ensure-control-center-process-stopped.*Assert-ExpectedProcessIsStopped.*mark-user-package-removal' `
+        -Description 'runtime guard precedes destructive identity operations'
+    Assert-TextContains -Text $uninstaller `
+        -Pattern '(?s)remove-installed-payload-files''\s*Assert-ExpectedProcessIsStopped[^\r\n]*ControlCenter\.exe[^\r\n]*\s*Assert-ExpectedProcessIsStopped[^\r\n]*ba-click-fx-desktop\.exe[^\r\n]*\s*Remove-InstalledPayloadFiles' `
+        -Description 'runtime guard is repeated before deleting live payload'
+    # Window classes are stable rendezvous contracts; catch accidental drift
+    # without adding another application-side shutdown protocol.
+    foreach ($sourcePath in @('src/control-center/control_center_window.hpp', 'src/windows/src/overlay_window.cpp'))
+    {
+        $source = Read-RepositoryText -RelativePath $sourcePath
+        $class = [regex]::Match($source, 'L"((?:BAFX\.NativeControlCenter\.Window\.v1|BaClickFxDesktopOverlay))"')
+        Assert-True -Condition ($class.Success -and $uninstaller.Contains('"' + $class.Groups[1].Value + '"')) `
+            -Message "Uninstaller shutdown window class differs from $sourcePath."
+    }
+    $inno = Read-RepositoryText -RelativePath 'tools/installer/ba-click-fx-desktop.iss'
+    $uninstall = [regex]::Match($inno, '(?s)procedure CurUninstallStepChanged\b.*').Value
+    Assert-TextContains -Text $uninstall `
+        -Pattern '(?s)ResolveRollbackScript.*SupportsProcessStop.*-StopProcessesOnly.*RaiseInstallerFailure.*CreateOriginalUserStatePath.*if FileExists\(MachineStatePath\)' `
+        -Description 'Inno shuts down runtime before pending recovery and aborts on helper failure'
+    Assert-TextContains -Text $uninstall `
+        -Pattern '(?s)else if FileExists.*InstallStatePath.*MachineStatePath.*RaiseInstallerFailure\(CustomMessage\(''RuntimeStopScriptUnavailable''\)' `
+        -Description 'missing helper cannot bypass verification of a real installation'
+}
+
 function Test-InstallerLogArchive
 {
     $archiveAst = Get-ParsedScript -RelativePath 'tools/installer/archive-install-log.ps1'
@@ -4158,6 +4192,7 @@ Test-SharedInstallerStateContract
 Test-ProtectedAclIdentityResolutionContract
 Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
+Test-UninstallerShutdownIntegrationContract
 Test-CertificateLifecycleBoundaryContract
 & (Join-Path $repositoryRoot 'tools/verify-installer-identity-recovery.ps1') -RepositoryRoot $repositoryRoot
 Test-VersionMapping
