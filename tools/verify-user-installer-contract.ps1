@@ -724,38 +724,134 @@ function Invoke-CertificateLifecycleProbe
 
 function Test-UninstallerProcessPathFilter
 {
-    $scriptPath = 'tools/installer/unregister-machine.ps1'
-    $ast = Get-ParsedScript -RelativePath $scriptPath
-    $functionText = Get-FunctionText -Ast $ast -Name 'Assert-ExpectedProcessIsStopped'
+    $ast = Get-ParsedScript -RelativePath 'tools/installer/unregister-machine.ps1'
+    $functions = @('Get-ExpectedProcesses', 'Assert-ExpectedProcessIsStopped',
+        'Stop-ExpectedProcesses', 'Stop-InstalledProcesses') | ForEach-Object {
+        Get-FunctionText -Ast $ast -Name $_
+    }
+    $probe = New-Module -ScriptBlock ([scriptblock]::Create(($functions -join "`n") + @'
 
-    # PowerShell accepts a line-leading -and as a command during parsing, so this
-    # function must run to catch the failure mode seen by the shipped uninstaller.
-    $mockExecutablePath = 'D:\Portable\ba-click-fx-desktop.exe'
-    function Get-CimInstance
+function ConvertTo-BafxInstallerSummaryValue { param($Value) return $Value }
+function Write-Host { param($Object) }
+function Get-CimInstance
+{
+    param($ClassName, $Filter, $ErrorAction)
+    ++$script:Enumerations
+    foreach ($process in $script:Processes)
     {
-        param(
-            [Parameter(Position = 0)]
-            [string]$ClassName,
-
-            [string]$Filter
-        )
-
-        return [pscustomobject]@{
-            ExecutablePath = $mockExecutablePath
+        if ($Filter -eq "Name='$([IO.Path]::GetFileName($process.Path))'" -and
+            (-not $process.Exited -or $script:Restarted))
+        {
+            [pscustomobject]@{ProcessId = $process.ProcessId; ExecutablePath = $process.ObservedPath}
         }
     }
-    . ([scriptblock]::Create($functionText))
-
-    $installedExecutablePath =
-        'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
-    Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
-
-    $mockExecutablePath = $installedExecutablePath
-    Assert-Throws `
-        -Action {
-            Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
-        } `
-        -Description 'installed Host process still running'
+}
+function Open-ExpectedProcess
+{
+    param($ProcessId, $ExecutablePath)
+    $process = $script:Processes | Where-Object { $_.ProcessId -eq $ProcessId } | Select-Object -First 1
+    if ($process.Mode -eq 'open-denied') { throw [ComponentModel.Win32Exception]::new(5) }
+    if ($process.Mode -eq 'gone' -or $process.Path -ne $ExecutablePath) { return $null }
+    if ($script:Restarted) { $process.Exited = $false }
+    return $process
+}
+function New-ProbeProcess
+{
+    param($Path, $Mode = 'graceful')
+    $process = [pscustomobject]@{
+        Path = $Path; ObservedPath = $Path; Mode = $Mode; ProcessId = 42
+        Exited = $false; Forced = 0; Disposed = $false; LastCloseError = 0
+    }
+    $process | Add-Member ScriptMethod RequestClose {
+        if ($this.Mode -eq 'graceful') { $this.Exited = $true }
+        return 1
+    }
+    $process | Add-Member ScriptMethod WaitExited { param($Timeout) return $this.Exited }
+    $process | Add-Member ScriptMethod Terminate {
+        ++$this.Forced
+        if ($this.Mode -eq 'terminate-denied') { throw [ComponentModel.Win32Exception]::new(5) }
+        $this.Exited = $this.Mode -ne 'stalled'
+    }
+    $process | Add-Member ScriptMethod Dispose { $this.Disposed = $true }
+    return $process
+}
+$script:Processes = @()
+$script:Enumerations = 0
+$script:Restarted = $false
+Export-ModuleMember -Function @()
+'@))
+    try
+    {
+        & $probe {
+            param($Root)
+            Stop-InstalledProcesses -InstallRoot $Root
+        } 'C:\Program Files\ba-click-fx-desktop'
+        foreach ($mode in @('graceful', 'hung', 'gone', 'open-denied', 'terminate-denied', 'stalled'))
+        {
+            $result = & $probe {
+                param($Mode)
+                $path = 'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
+                $process = New-ProbeProcess -Path $path -Mode $Mode
+                $script:Processes = @($process)
+                $failed = $false
+                try { Stop-ExpectedProcesses -ExecutablePath $path -GracefulTimeoutMilliseconds 0 -ForceTimeoutMilliseconds 0 }
+                catch { $failed = $true }
+                return [pscustomobject]@{Failed = $failed; Process = $process}
+            } $mode
+            Assert-True -Condition ($result.Failed -eq ($mode -in @('open-denied', 'terminate-denied', 'stalled'))) `
+                -Message "Unexpected shutdown outcome for $mode."
+            Assert-True -Condition ($result.Process.Forced -eq [int]($mode -in @('hung', 'terminate-denied', 'stalled'))) `
+                -Message "Unexpected forced termination for $mode."
+            Assert-True -Condition ($result.Process.Disposed -eq ($mode -notin @('open-denied', 'gone'))) `
+                -Message "Verified process handle cleanup failed for $mode."
+        }
+        & $probe {
+            $expected = 'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
+            $portable = New-ProbeProcess -Path 'D:\Portable\ba-click-fx-desktop.exe' -Mode hung
+            $script:Processes = @($portable)
+            Assert-ExpectedProcessIsStopped -ExecutablePath $expected
+            # Stale CIM identity (including PID reuse) must also be ignored when
+            # the opened process has a different image path.
+            $portable.ObservedPath = $expected
+            Assert-ExpectedProcessIsStopped -ExecutablePath $expected
+            if ($portable.Forced -ne 0 -or $portable.Disposed) { throw 'Portable process was touched.' }
+            $unknown = New-ProbeProcess -Path $expected -Mode 'open-denied'
+            $unknown.ObservedPath = $null
+            $script:Processes = @($unknown)
+            try { Assert-ExpectedProcessIsStopped -ExecutablePath $expected }
+            catch { return }
+            throw 'Unknown process identity was silently ignored.'
+        }
+        $restartRejected = & $probe {
+            $path = 'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
+            $script:Processes = @(New-ProbeProcess -Path $path)
+            $script:Restarted = $true
+            try { Stop-ExpectedProcesses -ExecutablePath $path -GracefulTimeoutMilliseconds 0 -ForceTimeoutMilliseconds 0 }
+            catch { return $true }
+            return $false
+        }
+        Assert-True -Condition $restartRejected -Message 'Restarted process escaped the final shutdown check.'
+        & $probe {
+            $script:Restarted = $false
+            $root = 'C:\Program Files\ba-click-fx-desktop'
+            $center = New-ProbeProcess -Path (Join-Path $root 'BAFX.ControlCenter.exe')
+            $hostProcess = New-ProbeProcess -Path (Join-Path $root 'ba-click-fx-desktop.exe')
+            $hostProcess.ProcessId = 43
+            $hostProcess | Add-Member NoteProperty Center $center
+            $hostProcess | Add-Member ScriptMethod RequestClose {
+                if (-not $this.Center.Exited) { throw 'Host closed before Control Center saved its config.' }
+                $this.Exited = $true
+                return 1
+            } -Force
+            $script:Processes = @($center, $hostProcess)
+            Stop-InstalledProcesses -InstallRoot $root
+            if (-not $center.Exited -or -not $hostProcess.Exited) { throw 'Both runtime processes must exit.' }
+        }
+    }
+    finally
+    {
+        Remove-Module -ModuleInfo $probe -Force
+    }
 }
 
 function Test-InstallerLogArchive

@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$InstallDirectory
+    [string]$InstallDirectory,
+
+    [switch]$StopProcessesOnly
 )
 
 Set-StrictMode -Version Latest
@@ -24,6 +26,222 @@ function Assert-Administrator
     }
 }
 
+function Initialize-InstallerProcessInterop
+{
+    if ($null -ne ('Bafx.Installer.RuntimeProcess' -as [type]))
+    {
+        return
+    }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace Bafx.Installer
+{
+    public sealed class RuntimeProcess : IDisposable
+    {
+        private readonly SafeWaitHandle handle;
+        public int ProcessId { get; private set; }
+        public int LastCloseError { get; private set; }
+
+        private RuntimeProcess(int processId, SafeWaitHandle processHandle)
+        {
+            ProcessId = processId;
+            handle = processHandle;
+        }
+
+        public static RuntimeProcess Open(int processId, string expectedPath)
+        {
+            // Reuse one verified handle throughout shutdown to avoid PID reuse.
+            // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE.
+            SafeWaitHandle processHandle = OpenProcess(0x00101001, false, processId);
+            bool retained = false;
+            try
+            {
+                if (processHandle.IsInvalid)
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error == 87 || error == 1168)
+                    {
+                        return null;
+                    }
+                    throw new Win32Exception(error, "Cannot open process " + processId + "; win32=" + error);
+                }
+                StringBuilder imagePath = new StringBuilder(32768);
+                int length = imagePath.Capacity;
+                if (!QueryFullProcessImageName(processHandle, 0, imagePath, ref length))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    if (WaitForSingleObject(processHandle, 0) == 0)
+                    {
+                        return null;
+                    }
+                    throw new Win32Exception(error, "Cannot verify process " + processId + "; win32=" + error);
+                }
+                if (!String.Equals(Path.GetFullPath(imagePath.ToString()),
+                    Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+                RuntimeProcess result = new RuntimeProcess(processId, processHandle);
+                retained = true;
+                return result;
+            }
+            finally
+            {
+                if (!retained)
+                {
+                    processHandle.Dispose();
+                }
+            }
+        }
+
+        public int RequestClose()
+        {
+            int posted = 0;
+            LastCloseError = 0;
+            if (WaitExited(0))
+            {
+                return posted;
+            }
+            // Hidden tray windows are included. Other sessions still participate
+            // in the bounded termination fallback when their desktop is absent.
+            EnumWindowProc callback = delegate(IntPtr window, IntPtr unused)
+            {
+                uint owner;
+                GetWindowThreadProcessId(window, out owner);
+                if (owner == (uint)ProcessId)
+                {
+                    StringBuilder className = new StringBuilder(256);
+                    GetClassName(window, className, className.Capacity);
+                    if (className.ToString() == "BAFX.NativeControlCenter.Window.v1"
+                        || className.ToString() == "BaClickFxDesktopOverlay")
+                    {
+                        if (PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero))
+                        {
+                            ++posted;
+                        }
+                        else
+                        {
+                            LastCloseError = Marshal.GetLastWin32Error();
+                        }
+                    }
+                }
+                return true;
+            };
+            if (!EnumWindows(callback, IntPtr.Zero))
+            {
+                int error = Marshal.GetLastWin32Error();
+                throw new Win32Exception(error, "Cannot enumerate windows for process " + ProcessId + "; win32=" + error);
+            }
+            return posted;
+        }
+
+        public bool WaitExited(int milliseconds)
+        {
+            uint result = WaitForSingleObject(handle, (uint)milliseconds);
+            if (result == 0)
+            {
+                return true;
+            }
+            if (result == 258)
+            {
+                return false;
+            }
+            int error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error, "Cannot wait for process " + ProcessId + "; win32=" + error);
+        }
+
+        public void Terminate()
+        {
+            if (!WaitExited(0) && !TerminateProcess(handle, 1))
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (!WaitExited(0))
+                {
+                    throw new Win32Exception(error, "Cannot terminate process " + ProcessId + "; win32=" + error);
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            handle.Dispose();
+        }
+
+        private delegate bool EnumWindowProc(IntPtr window, IntPtr parameter);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern SafeWaitHandle OpenProcess(uint access, bool inherit, int processId);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "QueryFullProcessImageNameW")]
+        private static extern bool QueryFullProcessImageName(SafeWaitHandle process, uint flags, StringBuilder path, ref int length);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(SafeWaitHandle process, uint milliseconds);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(SafeWaitHandle process, uint exitCode);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool EnumWindows(EnumWindowProc callback, IntPtr parameter);
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetClassNameW")]
+        private static extern int GetClassName(IntPtr window, StringBuilder name, int count);
+        [DllImport("user32.dll", SetLastError = true, EntryPoint = "PostMessageW")]
+        private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    }
+}
+'@
+}
+
+function Open-ExpectedProcess
+{
+    param([int]$ProcessId, [string]$ExecutablePath)
+
+    Initialize-InstallerProcessInterop
+    return [Bafx.Installer.RuntimeProcess]::Open($ProcessId, $ExecutablePath)
+}
+
+function Get-ExpectedProcesses
+{
+    param([Parameter(Mandatory = $true)][string]$ExecutablePath)
+
+    $expected = [IO.Path]::GetFullPath($ExecutablePath)
+    $processes = New-Object Collections.Generic.List[object]
+    try
+    {
+        foreach ($candidate in @(Get-CimInstance Win32_Process `
+                -Filter "Name='$([IO.Path]::GetFileName($expected))'" -ErrorAction Stop))
+        {
+            if (-not [string]::IsNullOrWhiteSpace($candidate.ExecutablePath) -and
+                [IO.Path]::GetFullPath($candidate.ExecutablePath) -ne $expected)
+            {
+                continue
+            }
+            # CIM only supplies candidates. Unknown paths require a handle query
+            # instead of silently skipping a potentially installed process.
+            $pathDetail = ConvertTo-BafxInstallerSummaryValue -Value $expected
+            Write-Host "BAFX_INSTALL_PROCESS: path=$pathDetail; pid=$($candidate.ProcessId); action=verify-identity"
+            $process = Open-ExpectedProcess `
+                -ProcessId ([int]$candidate.ProcessId) -ExecutablePath $expected
+            if ($null -ne $process)
+            {
+                $processes.Add($process)
+            }
+        }
+        return $processes.ToArray()
+    }
+    catch
+    {
+        foreach ($process in $processes)
+        {
+            $process.Dispose()
+        }
+        throw
+    }
+}
+
 function Assert-ExpectedProcessIsStopped
 {
     param(
@@ -31,17 +249,92 @@ function Assert-ExpectedProcessIsStopped
         [string]$ExecutablePath
     )
 
-    $expected = [IO.Path]::GetFullPath($ExecutablePath)
-    $running = Get-CimInstance Win32_Process -Filter "Name='$([IO.Path]::GetFileName($expected))'" |
-        Where-Object {
-            (-not [string]::IsNullOrWhiteSpace($_.ExecutablePath)) -and
-                ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $expected)
-        } |
-        Select-Object -First 1
-    if ($null -ne $running)
+    $processes = @(Get-ExpectedProcesses -ExecutablePath $ExecutablePath)
+    try
     {
-        throw "Close the running application before uninstalling: $expected"
+        foreach ($process in $processes)
+        {
+            if (-not $process.WaitExited(0))
+            {
+                throw "Application is still running before uninstall: $ExecutablePath (PID $($process.ProcessId))"
+            }
+        }
     }
+    finally
+    {
+        foreach ($process in $processes)
+        {
+            $process.Dispose()
+        }
+    }
+}
+
+function Stop-ExpectedProcesses
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [ValidateRange(0, 10000)][int]$GracefulTimeoutMilliseconds = 10000,
+        [ValidateRange(0, 3000)][int]$ForceTimeoutMilliseconds = 3000
+    )
+
+    $processes = @(Get-ExpectedProcesses -ExecutablePath $ExecutablePath)
+    $pathDetail = ConvertTo-BafxInstallerSummaryValue -Value $ExecutablePath
+    try
+    {
+        foreach ($process in $processes)
+        {
+            $posted = $process.RequestClose()
+            Write-Host "BAFX_INSTALL_PROCESS: path=$pathDetail; pid=$($process.ProcessId); action=close-request; windows=$posted; win32=$($process.LastCloseError); timeout-ms=$GracefulTimeoutMilliseconds"
+        }
+        # Share one deadline across all instances of an executable, including
+        # multiple logged-in sessions, to keep the total wait bounded.
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($process in $processes)
+        {
+            $remaining = [Math]::Max(0, $GracefulTimeoutMilliseconds - [int]$timer.ElapsedMilliseconds)
+            if (-not $process.WaitExited($remaining))
+            {
+                Write-Host "BAFX_INSTALL_PROCESS: path=$pathDetail; pid=$($process.ProcessId); action=force-terminate; timeout-ms=$ForceTimeoutMilliseconds"
+                $process.Terminate()
+            }
+            else
+            {
+                Write-Host "BAFX_INSTALL_PROCESS: path=$pathDetail; pid=$($process.ProcessId); action=graceful-exit"
+            }
+        }
+        $timer.Restart()
+        foreach ($process in $processes)
+        {
+            $remaining = [Math]::Max(0, $ForceTimeoutMilliseconds - [int]$timer.ElapsedMilliseconds)
+            if (-not $process.WaitExited($remaining))
+            {
+                throw "Process did not exit after termination: $ExecutablePath (PID $($process.ProcessId)); timeout-ms=$ForceTimeoutMilliseconds"
+            }
+            Write-Host "BAFX_INSTALL_PROCESS: path=$pathDetail; pid=$($process.ProcessId); action=exit-confirmed"
+        }
+    }
+    finally
+    {
+        foreach ($process in $processes)
+        {
+            $process.Dispose()
+        }
+    }
+    Assert-ExpectedProcessIsStopped -ExecutablePath $ExecutablePath
+}
+
+function Stop-InstalledProcesses
+{
+    param([Parameter(Mandatory = $true)][string]$InstallRoot)
+
+    # Control Center may still need Host IPC to commit its pending config patch.
+    $script:InstallerStep = 'stop-control-center-processes'
+    Stop-ExpectedProcesses -ExecutablePath (Join-Path $InstallRoot 'BAFX.ControlCenter.exe')
+    $script:InstallerStep = 'stop-host-processes'
+    Stop-ExpectedProcesses -ExecutablePath (Join-Path $InstallRoot 'ba-click-fx-desktop.exe')
+    $script:InstallerStep = 'verify-runtime-processes-stopped'
+    Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $InstallRoot 'BAFX.ControlCenter.exe')
+    Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $InstallRoot 'ba-click-fx-desktop.exe')
 }
 
 function Write-Utf8NoBom
@@ -1483,6 +1776,13 @@ $installRoot = Resolve-ProtectedProgramFilesPath `
     -Path $InstallDirectory `
     -Description 'uninstall directory'
 Assert-NoReparsePath -Path $installRoot
+if ($StopProcessesOnly)
+{
+    # Inno invokes this before pending rollback, which may replace live binaries.
+    # This branch must not inspect, repair, or write installation journals.
+    Stop-InstalledProcesses -InstallRoot $installRoot
+    exit 0
+}
 $statePath = Join-Path $installRoot 'Installer\INSTALL-STATE.json'
 $uninstallCompleteMarkerPath = Join-Path $installRoot 'Installer\UNINSTALL-COMPLETE.json'
 $uninstallJournalPath = Join-Path $installRoot 'Installer\UNINSTALL-STATE.json'
@@ -1590,6 +1890,7 @@ if ([IO.Path]::IsPathRooted($packageFile) -or
 {
     throw 'Protected install state has an unsafe package file name.'
 }
+Stop-InstalledProcesses -InstallRoot $installRoot
 $uninstallJournal = Read-UninstallJournal `
     -Path $uninstallJournalPath `
     -State $state
@@ -1739,6 +2040,8 @@ Write-UninstallJournal `
     -State $state `
     -Phase 'payload-removing'
 $script:InstallerStep = 'remove-installed-payload-files'
+Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $installRoot 'BAFX.ControlCenter.exe')
+Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $installRoot 'ba-click-fx-desktop.exe')
 Remove-InstalledPayloadFiles -InstallRoot $installRoot -State $state
 
 $script:InstallerStep = 'mark-state-removal'
