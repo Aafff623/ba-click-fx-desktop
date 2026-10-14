@@ -71,6 +71,13 @@ try
     $principal = New-Object Security.Principal.WindowsPrincipal(
         [Security.Principal.WindowsIdentity]::GetCurrent())
     $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $readSid = $userSid
+    if ($isAdministrator)
+    {
+        # Test ordinary-user rules independently of the elevated fixture owner.
+        # Its existing full-control ACEs can merge with inherited user ACEs.
+        $readSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-21-1-2-3-1000')
+    }
     # Existing children can retain explicit administrator access in hosted CI.
     # Reproduce it so the probe also covers an explicit and an inherited ACE
     # for the same SID after the production helper repairs the parent.
@@ -124,7 +131,7 @@ try
     }
     Write-Host "ACL fixture: administrator=$isAdministrator; legacy-traversal-denied=$denied."
 
-    & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $rollbackRoot $userSid.Value
+    & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $rollbackRoot $readSid.Value
     $items = @(Get-ChildItem -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop)
     Assert-Probe ($items.Count -eq 3) 'Directory hardening did not restore traversal to existing children.'
     Assert-Probe ([IO.File]::ReadAllText($journalPath) -eq '{"schema":2}') 'The rollback journal remained unreadable.'
@@ -157,24 +164,21 @@ try
             }
         }
         $userRules = @($rules | Where-Object {
-            $_.IdentityReference.Value -eq $userSid.Value -and
+            $_.IdentityReference.Value -eq $readSid.Value -and
             $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
             $_.IsInherited -eq $expectedInherited -and
             $_.FileSystemRights -eq $readRights
         })
-        Assert-Probe ($userRules.Count -eq 1) "Original-user read rule mismatch: path=$path; inherited=$expectedInherited; matches=$($userRules.Count); sddl=$($acl.Sddl)"
-        if (-not $isAdministrator)
-        {
-            $userWriteRules = @($rules | Where-Object {
-                $_.IdentityReference.Value -eq $userSid.Value -and
-                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-                ([int]$_.FileSystemRights -band $writeRights) -ne 0
-            })
-            Assert-Probe ($userWriteRules.Count -eq 0) 'The original user gained write access.'
-        }
+        Assert-Probe ($userRules.Count -eq 1) "Original-user read rule mismatch: path=$path; sid=$($readSid.Value); inherited=$expectedInherited; matches=$($userRules.Count); sddl=$($acl.Sddl)"
+        $userWriteRules = @($rules | Where-Object {
+            $_.IdentityReference.Value -eq $readSid.Value -and
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            ([int]$_.FileSystemRights -band $writeRights) -ne 0
+        })
+        Assert-Probe ($userWriteRules.Count -eq 0) 'The original user gained write access.'
     }
 
-    & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $journalPath $userSid.Value
+    & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $journalPath $readSid.Value
     $fileAcl = Get-Acl -LiteralPath $journalPath
     Assert-Probe $fileAcl.AreAccessRulesProtected 'State files must remain individually protected.'
     foreach ($rule in $fileAcl.Access)
