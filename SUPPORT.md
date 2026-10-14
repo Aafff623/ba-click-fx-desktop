@@ -310,6 +310,9 @@ staged files and recovery state; keep the logs and recovery materials, then repa
 
 0.3.0 修复回滚目录权限继承，并在恢复 schema 3 挂起安装时使用当前安装器携带的脚本。成功升级后，仅归档仍处于 `started` 的旧卸载日志，保留其原始内容与权限；已经进入资源清理的日志必须先完成恢复。旧卸载日志残留时请使用新安装器修复或升级，保留安装日志和恢复材料，不要手动删除状态文件。
 
+0.3.1 修复卸载前检查及回滚失败中止。已安装的旧版本需要先退出 Host 和控制中心，再运行 0.3.1 安装器升级或修复，
+才能更新卸载器与辅助脚本；仅替换应用 EXE 不会更新旧卸载入口。挂起安装回滚失败时请保留日志与恢复材料后修复安装。
+
 运行日志保留 `WGC.BorderlessAccess.ExternalHostTrust` 状态与 HRESULT，并新增 `.Check` 和 `.Reason`，分别指出签名验证、指纹/哈希、完整名称、有效期、用途或证书存储检查。`CERT_E_EXPIRED` 与 `CERT_E_WRONG_USAGE` 分别表示有效期和代码签名用途错误；查询错误保留原始系统错误。`WinVerifyTrust` 先失败时保持其原始结果，后续检查不会冒充已执行。
 
 更新检查严格由用户点击触发。Control Center 不会在启动、连接 Host 或托盘恢复时自动联网，也不会
