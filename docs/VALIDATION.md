@@ -933,6 +933,39 @@ identity template 和 native signer，不携带证书或私钥。便携包通过
 视觉现象已解决。本机原安装、Appx 注册和证书存储未修改。发布后的远端提交、标签、CI、四份资产与下载
 复算记录保存至发布目录的 `release-verification.md`。
 
+### 5.11 0.3.0 发布检查（2026-10-14）
+
+候选实现提交为 `6ad054c1f4ce2b440fdd10c44335d4ed001b0ce4`，正式版本为 `0.3.0`，
+Windows 数字版本和 unsigned identity template 版本均为 `0.3.0.0`。本地 Full/Slim 的
+CMake cache 和生成的 Host 工程均使用 Windows SDK `10.0.28000.0`；两套 `--clean-first`
+构建通过，分别耗时 `231.04 s` / `228.74 s`。
+
+- Full CTest **46/46** 通过，耗时 `142.47 s`；原生热键 `12.40 s`，Spout2 跨进程检查 `9.10 s`。
+- Slim CTest **45/45** 通过，耗时 `116.97 s`；原生热键 `12.35 s`。两套测试均无禁用或跳过项。
+- [候选实现 CI](https://github.com/CialloKing/ba-click-fx-desktop/actions/runs/38539842220) 的
+  SDK 19041 / 22621 / 26100 产品构建与自动测试全部通过，自动测试 **41/41**，耗时 `139.45 s`。
+- 文档检查覆盖 8 个文档，通过。安装器由 Inno Setup `6.7.3` 编译，版本与 PE 依赖检查通过；
+  携带 unsigned identity template 和 native signer，不携带证书或私钥。
+- 便携包使用 `package-test-bundle.ps1` / `verify-test-bundle.ps1` 的既有清单格式，验证文件清单、
+  文件哈希、PE 依赖、程序版本、Host 临时目录启动、数据位置与控制中心启动边界；两份 SHA-256
+  sidecar 与独立复算结果一致。公开资产只提供 Full 四件套，Slim 仅构建和测试。
+
+ACL 回归直接调用生产目录保护函数并检查真实 NTFS 规则。非管理员环境使用当前用户 SID，管理员 CI
+使用独立普通用户 SID，区分运行账户既有全权与普通用户只读规则；同时验证管理员/SYSTEM 继承权限，
+保留对普通用户写入、删除和修改权限的拒绝。恢复夹具覆盖旧卸载日志归档、状态或 Host/签名材料损坏拒绝，
+以及提交后清理中断重试；Appx 注册与机器证书存储仍由夹具模拟。
+
+| 资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `ba-click-fx-desktop-0.3.0-Portable-windows-x64.zip` | 1520305 | `28530DA1E8B6265AA321E1483DCE011054020CA093F1A7A5D5FB34701691DAE8` |
+| `ba-click-fx-desktop-0.3.0-Portable-windows-x64.zip.sha256` | 116 | `000339890843356047F96FEFAE3E584B203F28C6730E095905A4F3D25A70BFFA` |
+| `ba-click-fx-desktop-0.3.0-setup-windows-x64.exe` | 4238672 | `7A0A72BB34A079BC4F2AE7DCDEEFFE6C9DC93FE5555506E8D8574E93E47B0FF3` |
+| `ba-click-fx-desktop-0.3.0-setup-windows-x64.exe.sha256` | 113 | `CDD0EF7EB26A8B3189594229C05BFCFFC1DB395DD5CAAB33E1CA1159CAAF5BF2` |
+
+本节的自动化证据不替代 Windows 11 包身份、无边框授权、最终画面，以及隔离环境中真实过期证书和
+故障现场安装/升级/卸载的验收；这些矩阵仍为 **Not Run**。远端提交、中文注释标签、CI、四份资产与
+公开下载复算记录保存在 `artifacts/local/release-0.3.0-20261014/release-verification.md`。
+
 ## 6. 需求追踪
 
 | 合同 | ADR | Spike | Validation suite |
