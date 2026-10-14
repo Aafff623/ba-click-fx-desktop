@@ -1,4 +1,4 @@
-# 验证策略
+﻿# 验证策略
 
 ## 1. 证据分层
 
@@ -965,6 +965,31 @@ ACL 回归直接调用生产目录保护函数并检查真实 NTFS 规则。非�
 本节的自动化证据不替代 Windows 11 包身份、无边框授权、最终画面，以及隔离环境中真实过期证书和
 故障现场安装/升级/卸载的验收；这些矩阵仍为 **Not Run**。远端提交、中文注释标签、CI、四份资产与
 公开下载复算记录保存在 `artifacts/local/release-0.3.0-20261014/release-verification.md`。
+
+### 5.12 0.3.1 发布检查（2026-10-14）
+
+候选实现提交为 `d52f49388032be21316f7e9f09171c5c30cd2d3b`，产品版本为 `0.3.1`，Windows 数字版本和
+unsigned identity template 版本为 `0.3.1.0`。Full/Slim 均以 Visual Studio 2026 和 SDK `10.0.28000.0`
+完整重建成功，SDK 缓存和生成项目一致，Host 与控制中心版本资源一致。
+
+- Full 本地 CTest 为 **46/47**，135.16 秒；Slim 为 **45/46**，124.82 秒；没有跳过或禁用测试。
+- 两者唯一失败项均为 `hotkey_process_boundary`，在第 234 行等待合成输入触发暂停状态超时；Full 单项复查和
+  直接运行仍失败。相关 C++ 与测试源码相对 v0.3.0 未变化，远端 CI 同一项通过；保留日志，不放宽断言，根因未确认。
+- 候选远端 CI `38570389164` 的四个任务均通过：42/42 自动化测试、SDK 19041/22621/26100 构建和 8 个文档检查。
+- 卸载修复另有 27 个独立 Inno 场景、11 项真实隔离进程检查和 8 个只读入口场景；恢复失败的脚本返回值被模拟，
+  真实安装实例的 AppX/证书卸载仍为 **Not Run**。
+- 正式 Full Portable 和 Setup 打包成功，版本、包内容、PE 依赖、启动检查与 SHA-256 校验通过。
+
+| 资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `ba-click-fx-desktop-0.3.1-Portable-windows-x64.zip` | 1520974 | `458504645C5BD781D48EC3DECE25D0D19636923C33FE49D57DA8C6FF78B303E3` |
+| `ba-click-fx-desktop-0.3.1-Portable-windows-x64.zip.sha256` | 116 | `5017572C00DAB549DCD5E99FA605D7F20BA4EC42408C4017A66FCFC99D8C74F4` |
+| `ba-click-fx-desktop-0.3.1-setup-windows-x64.exe` | 4240119 | `66E194AFF31C210430845F5E2125D42B84613408F17CC3777D55327D5B7F53C6` |
+| `ba-click-fx-desktop-0.3.1-setup-windows-x64.exe.sha256` | 113 | `4F807278AAFCF0880674B20BF2115564E81BA2B112709276F17FE8D064B74003` |
+
+本地原生快捷键检查未通过是本次验证限制，不将本地完整测试表述为全绿。Windows 11 包身份、无边框授权、最终画面，
+以及真实过期证书和故障现场安装/升级/卸载仍需实机验收。发布提交、注释标签、最终 CI 和公开下载复算记录保存在
+`artifacts/local/release-0.3.1-20261014/release-verification.md`。
 
 ## 6. 需求追踪
 
