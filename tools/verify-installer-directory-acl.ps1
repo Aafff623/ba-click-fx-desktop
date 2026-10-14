@@ -81,6 +81,12 @@ try
     $legacyAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
         $userSid, 'ReadAndExecute', 'Allow'))
     Set-Acl -LiteralPath $rollbackRoot -AclObject $legacyAcl
+    $legacyRules = @((Get-Acl -LiteralPath $rollbackRoot).GetAccessRules(
+        $true, $true, [Security.Principal.SecurityIdentifier]))
+    Assert-Probe ($legacyRules.Count -eq 3 -and
+        @($legacyRules | Where-Object {
+            $_.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None
+        }).Count -eq 0) 'The legacy fixture must omit child inheritance from its access rules.'
     $denied = $false
     try
     {
@@ -90,7 +96,16 @@ try
     {
         $denied = $true
     }
-    Assert-Probe $denied 'The legacy fixture did not reproduce inaccessible rollback children.'
+    $principal = New-Object Security.Principal.WindowsPrincipal(
+        [Security.Principal.WindowsIdentity]::GetCurrent())
+    $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    # Hosted Windows CI runs elevated with UAC disabled. Its token can retain
+    # access, so verify the legacy ACL itself in every environment and require
+    # denied traversal only for the original non-administrator reproduction.
+    if (-not $isAdministrator)
+    {
+        Assert-Probe $denied 'The legacy fixture did not reproduce inaccessible rollback children.'
+    }
 
     & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $rollbackRoot $userSid.Value
     $items = @(Get-ChildItem -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop)
@@ -117,6 +132,10 @@ try
             {
                 Assert-Probe ($matches[0].InheritanceFlags -eq $inheritance) 'Directory access is not inheritable.'
             }
+            else
+            {
+                Assert-Probe $matches[0].IsInherited "Administrator/SYSTEM access was not inherited: $path"
+            }
         }
         $userRules = @($rules | Where-Object { $_.IdentityReference.Value -eq $userSid.Value })
         Assert-Probe ($userRules.Count -eq 1) "Original-user read access was lost: $path"
@@ -130,7 +149,7 @@ try
     {
         Assert-Probe ($rule.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None) 'File ACLs contain directory inheritance flags.'
     }
-    Write-Host 'Installer directory ACLs verified on NTFS: legacy failure, restored traversal, inherited administrator access and read-only original-user access.'
+    Write-Host "Installer directory ACLs verified on NTFS: legacy inheritance defect, restored traversal, inherited administrator access and read-only original-user access; administrator=$isAdministrator; legacy-traversal-denied=$denied."
 }
 finally
 {
