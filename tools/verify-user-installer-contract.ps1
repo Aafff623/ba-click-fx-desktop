@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$RepositoryRoot
+    [string]$RepositoryRoot,
+
+    [switch]$ProcessPreflightOnly
 )
 
 Set-StrictMode -Version Latest
@@ -4319,13 +4321,21 @@ if (-not (Test-Path -LiteralPath $repositoryRoot -PathType Container))
     throw "Repository root does not exist: $repositoryRoot"
 }
 
+# Child PowerShell startup is slower on hosted runners. Give this independent
+# process-boundary probe its own CTest budget instead of extending all contracts.
+if ($ProcessPreflightOnly)
+{
+    Test-UninstallerProcessPathFilter
+    Test-UninstallerReadOnlyPreflight
+    exit 0
+}
+
 Test-PowerShellScriptContracts
 Test-SharedInstallerStateContract
 Test-ProtectedAclIdentityResolutionContract
 & (Join-Path $repositoryRoot 'tools/verify-installer-directory-acl.ps1') -RepositoryRoot $repositoryRoot
 Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
-Test-UninstallerReadOnlyPreflight
 Test-CertificateLifecycleBoundaryContract
 & (Join-Path $repositoryRoot 'tools/verify-installer-identity-recovery.ps1') -RepositoryRoot $repositoryRoot
 Test-VersionMapping

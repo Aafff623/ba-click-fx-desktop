@@ -110,8 +110,17 @@ if(BAFX_POWERSHELL_EXECUTABLE)
                 -File "${CMAKE_SOURCE_DIR}/tools/verify-user-installer-contract.ps1"
                 -RepositoryRoot "${CMAKE_SOURCE_DIR}"
         )
+        add_test(
+            NAME uninstall_process_preflight
+            COMMAND
+                "${BAFX_POWERSHELL_EXECUTABLE}"
+                -NoProfile
+                -File "${CMAKE_SOURCE_DIR}/tools/verify-user-installer-contract.ps1"
+                -RepositoryRoot "${CMAKE_SOURCE_DIR}"
+                -ProcessPreflightOnly
+        )
         set_tests_properties(
-            user_installer_contract
+            user_installer_contract uninstall_process_preflight
             PROPERTIES
                 LABELS "packaging;contract"
                 TIMEOUT 30
