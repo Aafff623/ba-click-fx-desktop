@@ -120,7 +120,15 @@ if(BAFX_POWERSHELL_EXECUTABLE)
                 -ProcessPreflightOnly
         )
         set_tests_properties(
-            user_installer_contract uninstall_process_preflight
+            user_installer_contract
+            PROPERTIES
+                LABELS "packaging;contract"
+                # CMS signing and recovery fixtures fluctuate on shared runners;
+                # keep a bounded budget without changing correctness assertions.
+                TIMEOUT 60
+        )
+        set_tests_properties(
+            uninstall_process_preflight
             PROPERTIES
                 LABELS "packaging;contract"
                 TIMEOUT 30

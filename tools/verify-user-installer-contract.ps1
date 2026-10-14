@@ -4337,6 +4337,7 @@ Test-ProtectedAclIdentityResolutionContract
 Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
 Test-CertificateLifecycleBoundaryContract
+Write-Host 'Verifying installer identity recovery and certificate fixtures.'
 & (Join-Path $repositoryRoot 'tools/verify-installer-identity-recovery.ps1') -RepositoryRoot $repositoryRoot
 Test-VersionMapping
 Test-InstallerLogArchive
