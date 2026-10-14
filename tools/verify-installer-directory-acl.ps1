@@ -68,6 +68,9 @@ try
         })
     }
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $principal = New-Object Security.Principal.WindowsPrincipal(
+        [Security.Principal.WindowsIdentity]::GetCurrent())
+    $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     # Existing children can retain explicit administrator access in hosted CI.
     # Reproduce it so the probe also covers an explicit and an inherited ACE
     # for the same SID after the production helper repairs the parent.
@@ -75,6 +78,15 @@ try
     $existingChildAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
         [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), 'FullControl', 'Allow'))
     Set-Acl -LiteralPath $identityRoot -AclObject $existingChildAcl
+    if ($isAdministrator)
+    {
+        # An elevated fixture owner may also retain an explicit user ACE.
+        # It must not be confused with the helper's inherited read-only rule.
+        $existingOwnerAcl = Get-Acl -LiteralPath $installerRoot
+        $existingOwnerAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $userSid, 'FullControl', 'Allow'))
+        Set-Acl -LiteralPath $installerRoot -AclObject $existingOwnerAcl
+    }
 
     # Reproduce the released installer's DACL: access on the root alone removes
     # inherited permissions from its existing identity/Installer directories.
@@ -103,9 +115,6 @@ try
     {
         $denied = $true
     }
-    $principal = New-Object Security.Principal.WindowsPrincipal(
-        [Security.Principal.WindowsIdentity]::GetCurrent())
-    $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     # Hosted Windows CI runs elevated with UAC disabled. Its token can retain
     # access, so verify the legacy ACL itself in every environment and require
     # denied traversal only for the original non-administrator reproduction.
@@ -113,6 +122,7 @@ try
     {
         Assert-Probe $denied 'The legacy fixture did not reproduce inaccessible rollback children.'
     }
+    Write-Host "ACL fixture: administrator=$isAdministrator; legacy-traversal-denied=$denied."
 
     & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $rollbackRoot $userSid.Value
     $items = @(Get-ChildItem -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop)
@@ -122,8 +132,11 @@ try
         [Security.AccessControl.InheritanceFlags]::ObjectInherit
     $writeRights = [int]([Security.AccessControl.FileSystemRights]::Write -bor
         [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership)
+    $readRights = [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
+        [Security.AccessControl.FileSystemRights]::Synchronize
     foreach ($path in @($rollbackRoot, $identityRoot, $installerRoot, $journalPath))
     {
         $acl = Get-Acl -LiteralPath $path
@@ -143,9 +156,22 @@ try
                 Assert-Probe ($matches[0].InheritanceFlags -eq $inheritance) 'Directory access is not inheritable.'
             }
         }
-        $userRules = @($rules | Where-Object { $_.IdentityReference.Value -eq $userSid.Value })
-        Assert-Probe ($userRules.Count -eq 1) "Original-user read access was lost: $path"
-        Assert-Probe (([int]$userRules[0].FileSystemRights -band $writeRights) -eq 0) 'The original user gained write access.'
+        $userRules = @($rules | Where-Object {
+            $_.IdentityReference.Value -eq $userSid.Value -and
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $_.IsInherited -eq $expectedInherited -and
+            $_.FileSystemRights -eq $readRights
+        })
+        Assert-Probe ($userRules.Count -eq 1) "Original-user read rule mismatch: path=$path; inherited=$expectedInherited; matches=$($userRules.Count); sddl=$($acl.Sddl)"
+        if (-not $isAdministrator)
+        {
+            $userWriteRules = @($rules | Where-Object {
+                $_.IdentityReference.Value -eq $userSid.Value -and
+                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                ([int]$_.FileSystemRights -band $writeRights) -ne 0
+            })
+            Assert-Probe ($userWriteRules.Count -eq 0) 'The original user gained write access.'
+        }
     }
 
     & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $journalPath $userSid.Value
