@@ -68,6 +68,13 @@ try
         })
     }
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    # Existing children can retain explicit administrator access in hosted CI.
+    # Reproduce it so the probe also covers an explicit and an inherited ACE
+    # for the same SID after the production helper repairs the parent.
+    $existingChildAcl = Get-Acl -LiteralPath $identityRoot
+    $existingChildAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), 'FullControl', 'Allow'))
+    Set-Acl -LiteralPath $identityRoot -AclObject $existingChildAcl
 
     # Reproduce the released installer's DACL: access on the root alone removes
     # inherited permissions from its existing identity/Installer directories.
@@ -121,20 +128,19 @@ try
     {
         $acl = Get-Acl -LiteralPath $path
         $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        $expectedInherited = $path -ne $rollbackRoot
         foreach ($sidValue in @('S-1-5-18', 'S-1-5-32-544'))
         {
             $matches = @($rules | Where-Object {
                 $_.IdentityReference.Value -eq $sidValue -and
-                $_.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl
+                $_.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl -and
+                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                $_.IsInherited -eq $expectedInherited
             })
-            Assert-Probe ($matches.Count -eq 1) "Administrator/SYSTEM access was lost: $path"
+            Assert-Probe ($matches.Count -eq 1) "Administrator/SYSTEM rule mismatch: path=$path; sid=$sidValue; inherited=$expectedInherited; matches=$($matches.Count); sddl=$($acl.Sddl)"
             if ($path -eq $rollbackRoot)
             {
                 Assert-Probe ($matches[0].InheritanceFlags -eq $inheritance) 'Directory access is not inheritable.'
-            }
-            else
-            {
-                Assert-Probe $matches[0].IsInherited "Administrator/SYSTEM access was not inherited: $path"
             }
         }
         $userRules = @($rules | Where-Object { $_.IdentityReference.Value -eq $userSid.Value })
