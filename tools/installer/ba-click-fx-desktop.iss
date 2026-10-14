@@ -1647,6 +1647,8 @@ begin
   DeleteTransientState;
 end;
 
+// Returning from this event does not cancel Inno cleanup. Recovery failures
+// must raise before Inno removes its files, shortcuts, or uninstall entry.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ExitCode: Integer;
@@ -1689,9 +1691,10 @@ begin
       'register-user-package.ps1');
     if ScriptPath = '' then
     begin
-      ShowRecoveryFailure(
-        'A pending installation exists but its user-package recovery script is missing.',
-        CustomMessage('RollbackRecovery'));
+      RaiseInstallerFailure(
+        'A pending installation exists but its user-package recovery script is missing.' + #13#10#13#10 +
+        CustomMessage('RollbackRecovery'),
+        1001);
       Exit;
     end;
     if not RunPowerShell(
@@ -1705,27 +1708,30 @@ begin
       RegistrationResultPath + '.diagnostic.txt',
       ExitCode) then
     begin
-      ShowRecoveryFailure(
+      RaiseInstallerFailure(
         FormatPowerShellFailure(
-          CustomMessage('RollbackPendingInstallation'), False, ExitCode),
-        CustomMessage('RollbackRecovery'));
+          CustomMessage('RollbackPendingInstallation'), False, ExitCode) + #13#10#13#10 +
+        CustomMessage('RollbackRecovery'),
+        1001);
       Exit;
     end;
     if ExitCode <> 0 then
     begin
       if ExitCode = 1001 then
       begin
-        ShowRetainedRecovery(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), True, ExitCode),
-          CustomMessage('FinalizeRepair'));
+            CustomMessage('RollbackPendingInstallation'), True, ExitCode) + #13#10#13#10 +
+          CustomMessage('FinalizeRepair'),
+          1001);
       end
       else
       begin
-        ShowRecoveryFailure(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), True, ExitCode),
-          CustomMessage('RollbackRecovery'));
+            CustomMessage('RollbackPendingInstallation'), True, ExitCode) + #13#10#13#10 +
+          CustomMessage('RollbackRecovery'),
+          1001);
       end;
       Exit;
     end;
@@ -1735,9 +1741,10 @@ begin
       'install-machine.ps1');
     if ScriptPath = '' then
     begin
-      ShowRecoveryFailure(
-        'A pending installation exists but its machine recovery script is missing.',
-        CustomMessage('RollbackRecovery'));
+      RaiseInstallerFailure(
+        'A pending installation exists but its machine recovery script is missing.' + #13#10#13#10 +
+        CustomMessage('RollbackRecovery'),
+        1001);
       Exit;
     end;
     if not RunPowerShell(
@@ -1747,27 +1754,30 @@ begin
       '',
       ExitCode) then
     begin
-      ShowRecoveryFailure(
+      RaiseInstallerFailure(
         FormatPowerShellFailure(
-          CustomMessage('RollbackPendingInstallation'), False, ExitCode),
-        CustomMessage('RollbackRecovery'));
+          CustomMessage('RollbackPendingInstallation'), False, ExitCode) + #13#10#13#10 +
+        CustomMessage('RollbackRecovery'),
+        1001);
       Exit;
     end;
     if ExitCode <> 0 then
     begin
       if ExitCode = 1001 then
       begin
-        ShowRetainedRecovery(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), True, ExitCode),
-          CustomMessage('FinalizeRepair'));
+            CustomMessage('RollbackPendingInstallation'), True, ExitCode) + #13#10#13#10 +
+          CustomMessage('FinalizeRepair'),
+          1001);
       end
       else
       begin
-        ShowRecoveryFailure(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), True, ExitCode),
-          CustomMessage('RollbackRecovery'));
+            CustomMessage('RollbackPendingInstallation'), True, ExitCode) + #13#10#13#10 +
+          CustomMessage('RollbackRecovery'),
+          1001);
       end;
       Exit;
     end;
@@ -1778,9 +1788,10 @@ begin
         'register-user-package.ps1');
       if ScriptPath = '' then
       begin
-        ShowRecoveryFailure(
-          'The restored user-package recovery script is missing.',
-          CustomMessage('RollbackRecovery'));
+        RaiseInstallerFailure(
+          'The restored user-package recovery script is missing.' + #13#10#13#10 +
+          CustomMessage('RollbackRecovery'),
+          1001);
         Exit;
       end;
       if not RunPowerShell(
@@ -1794,18 +1805,20 @@ begin
         RegistrationResultPath + '.diagnostic.txt',
         ExitCode) then
       begin
-        ShowRecoveryFailure(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), False, ExitCode),
-          CustomMessage('RollbackRecovery'));
+            CustomMessage('RollbackPendingInstallation'), False, ExitCode) + #13#10#13#10 +
+          CustomMessage('RollbackRecovery'),
+          1001);
         Exit;
       end;
       if ExitCode <> 0 then
       begin
-        ShowRecoveryFailure(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), True, ExitCode),
-          CustomMessage('RollbackRecovery'));
+            CustomMessage('RollbackPendingInstallation'), True, ExitCode) + #13#10#13#10 +
+          CustomMessage('RollbackRecovery'),
+          1001);
         Exit;
       end;
     end;
@@ -1819,9 +1832,10 @@ begin
         'install-machine.ps1');
       if ScriptPath = '' then
       begin
-        ShowRetainedRecovery(
-          'The pending cleanup script is missing; recovery state was retained.',
-          CustomMessage('FinalizeRepair'));
+        RaiseInstallerFailure(
+          'The pending cleanup script is missing; recovery state was retained.' + #13#10#13#10 +
+          CustomMessage('FinalizeRepair'),
+          1001);
         Exit;
       end;
       if not RunPowerShell(
@@ -1831,26 +1845,29 @@ begin
         '',
         ExitCode) then
       begin
-        ShowRetainedRecovery(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), False, ExitCode),
-          CustomMessage('FinalizeRepair'));
+            CustomMessage('RollbackPendingInstallation'), False, ExitCode) + #13#10#13#10 +
+          CustomMessage('FinalizeRepair'),
+          1001);
         Exit;
       end;
       if ExitCode <> 0 then
       begin
-        ShowRetainedRecovery(
+        RaiseInstallerFailure(
           FormatPowerShellFailure(
-            CustomMessage('RollbackPendingInstallation'), True, ExitCode),
-          CustomMessage('FinalizeRepair'));
+            CustomMessage('RollbackPendingInstallation'), True, ExitCode) + #13#10#13#10 +
+          CustomMessage('FinalizeRepair'),
+          1001);
         Exit;
       end;
     end;
     if FileExists(MachineStatePath) then
     begin
-      ShowRetainedRecovery(
-        'The pending rollback journal was retained for repair.',
-        CustomMessage('FinalizeRepair'));
+      RaiseInstallerFailure(
+        'The pending rollback journal was retained for repair.' + #13#10#13#10 +
+        CustomMessage('FinalizeRepair'),
+        1001);
       Exit;
     end;
     if not FileExists(InstallStatePath) then

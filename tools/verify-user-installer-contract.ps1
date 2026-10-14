@@ -1720,6 +1720,10 @@ function Test-InnoPayloadContract
     Assert-True `
         -Condition $uninstallCode.Success `
         -Message 'Inno uninstall code is missing.'
+    Assert-TextExcludes `
+        -Text $uninstallCode.Value `
+        -Pattern '\bShow(?:RecoveryFailure|RetainedRecovery)\s*\(' `
+        -Description 'uninstall recovery failures must abort instead of returning to Inno cleanup'
     Assert-TextContains `
         -Text $uninstallCode.Value `
         -Pattern 'RollbackAction RemoveNew[\s\S]*-Phase Rollback[\s\S]*RollbackAction RestorePrevious[\s\S]*-Phase RollbackCleanup' `
