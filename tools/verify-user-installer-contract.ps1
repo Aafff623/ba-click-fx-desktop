@@ -731,9 +731,11 @@ function Test-UninstallerProcessPathFilter
 
     # PowerShell accepts a line-leading -and as a command during parsing, so this
     # function must run to catch the failure mode seen by the shipped uninstaller.
-    $mockExecutablePath = 'D:\Portable\ba-click-fx-desktop.exe'
+    $mockExecutablePath = ''
+    $mockQueryFails = $false
     function Get-CimInstance
     {
+        [CmdletBinding()]
         param(
             [Parameter(Position = 0)]
             [string]$ClassName,
@@ -741,22 +743,143 @@ function Test-UninstallerProcessPathFilter
             [string]$Filter
         )
 
+        if ($mockQueryFails)
+        {
+            throw 'Injected process query failure.'
+        }
         return [pscustomobject]@{
             ExecutablePath = $mockExecutablePath
         }
     }
     . ([scriptblock]::Create($functionText))
 
-    $installedExecutablePath =
-        'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
-    Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
+    foreach ($fileName in @('ba-click-fx-desktop.exe', 'BAFX.ControlCenter.exe'))
+    {
+        $installedExecutablePath = Join-Path 'C:\Program Files\ba-click-fx-desktop' $fileName
+        $mockExecutablePath = Join-Path 'D:\Portable' $fileName
+        Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
+        foreach ($mockExecutablePath in @($installedExecutablePath, '', $null))
+        {
+            Assert-Throws `
+                -Action { Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath } `
+                -Description "running or unverifiable $fileName"
+        }
+        $mockQueryFails = $true
+        Assert-Throws `
+            -Action { Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath } `
+            -Description "process query failure for $fileName"
+        $mockQueryFails = $false
+    }
+}
 
-    $mockExecutablePath = $installedExecutablePath
-    Assert-Throws `
-        -Action {
-            Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
-        } `
-        -Description 'installed Host process still running'
+function Test-UninstallerReadOnlyPreflight
+{
+    $ast = Get-ParsedScript -RelativePath 'tools/installer/unregister-machine.ps1'
+    $guard = Get-FunctionText -Ast $ast -Name 'Assert-ExpectedProcessIsStopped'
+    $entry = Read-RepositoryText -RelativePath 'tools/installer/unregister-machine.ps1'
+    $entry = $entry.Substring($entry.IndexOf("`$script:InstallerStep = 'validate-administrator'"))
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('bafx-preflight-' + [Guid]::NewGuid().ToString('N'))
+    $installRoot = Join-Path $temporaryRoot 'app'
+    $installerRoot = Join-Path $installRoot 'Installer'
+    New-Item -ItemType Directory -Path $installerRoot -Force | Out-Null
+    try
+    {
+        # Invalid sentinels prove that process-only checks do not need a valid
+        # committed state or pending transaction. No cleanup functions are loaded.
+        foreach ($name in @('INSTALL-STATE.json', 'INSTALL-STATE.json.bak', 'PREPARE-STATE.json'))
+        {
+            [IO.File]::WriteAllText((Join-Path $installerRoot $name), 'unreadable state sentinel')
+        }
+        $before = @(Get-ChildItem -LiteralPath $installerRoot -File | ForEach-Object {
+            $_.Name + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+        })
+        $runner = Join-Path $temporaryRoot 'probe.ps1'
+        $diagnosticsPath = Resolve-RepositoryPath -RelativePath 'tools/installer/installer-diagnostics.ps1'
+        $pathsPath = Resolve-RepositoryPath -RelativePath 'tools/installer/protected-paths.ps1'
+        $probe = @'
+param([string]$InstallDirectory, [string]$Scenario, [switch]$CheckProcessesOnly)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$script:InstallerProductVersion = ''
+$script:InstallerPackageVersion = ''
+function Assert-Administrator {}
+function Resolve-ProtectedProgramFilesPath
+{
+    param([string]$Path, [string]$Description)
+    return [IO.Path]::GetFullPath($Path)
+}
+function Get-CimInstance
+{
+    [CmdletBinding()]
+    param([string]$ClassName, [string]$Filter)
+    if ($Scenario -eq 'query-failure') { throw 'Injected query failure.' }
+    if ($Scenario -eq 'unknown') { return [pscustomobject]@{ ExecutablePath = $null } }
+    $name = [regex]::Match($Filter, "Name='([^']+)'").Groups[1].Value
+    if (($Scenario -eq 'host' -and $name -eq 'ba-click-fx-desktop.exe') -or
+        ($Scenario -eq 'center' -and $name -eq 'BAFX.ControlCenter.exe'))
+    {
+        return [pscustomobject]@{ ExecutablePath = Join-Path $InstallDirectory $name }
+    }
+    if ($Scenario -eq 'other')
+    {
+        return [pscustomobject]@{ ExecutablePath = Join-Path 'D:\Portable' $name }
+    }
+}
+'@
+        $imports = ". '" + $diagnosticsPath.Replace("'", "''") + "'`n. '" + $pathsPath.Replace("'", "''") + "'`n"
+        $probe = $probe.Replace('function Assert-Administrator {}', $imports + 'function Assert-Administrator {}')
+        $probe += "`n" + $guard + "`n" + $entry
+        [IO.File]::WriteAllText($runner, $probe, (New-Object Text.UTF8Encoding($true)))
+        $powerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+        foreach ($scenario in @('host', 'center', 'unknown', 'query-failure', 'other', 'stopped', 'full-host', 'full-center'))
+        {
+            $queryScenario = $scenario.Replace('full-', '')
+            $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', ('"' + $runner + '"'), '-InstallDirectory', ('"' + $installRoot + '"'), '-Scenario', $queryScenario)
+            if (-not $scenario.StartsWith('full-')) { $arguments += '-CheckProcessesOnly' }
+            $stdout = Join-Path $temporaryRoot ($scenario + '.out')
+            $stderr = Join-Path $temporaryRoot ($scenario + '.err')
+            $process = Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden `
+                -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            try
+            {
+                # Keep the process handle before Windows PowerShell can reap a
+                # short-lived child; redirected output otherwise loses ExitCode.
+                $null = $process.Handle
+                if (-not $process.WaitForExit(10000))
+                {
+                    $process.Kill()
+                    throw "Process preflight timed out: $scenario"
+                }
+                $expectedCode = if ($scenario -in @('other', 'stopped')) { 0 } else { 1 }
+                Assert-True -Condition ($process.ExitCode -eq $expectedCode) `
+                    -Message ("Unexpected preflight exit code: $scenario; actual=$($process.ExitCode); " + [IO.File]::ReadAllText($stderr))
+                if ($expectedCode -ne 0)
+                {
+                    $step = if ($queryScenario -eq 'center') { 'ensure-control-center-process-stopped' } else { 'ensure-host-process-stopped' }
+                    Assert-TextContains -Text ([IO.File]::ReadAllText($stderr)) -Pattern ([regex]::Escape($step)) `
+                        -Description "preflight failed before state access: $scenario"
+                }
+            }
+            finally { $process.Dispose() }
+            $after = @(Get-ChildItem -LiteralPath $installerRoot -File | ForEach-Object {
+                $_.Name + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            })
+            Assert-ArrayEquals -Expected $before -Actual $after -Description "preflight leaves installation state untouched: $scenario"
+        }
+        Write-Host 'Uninstall process preflight verified: Host/Control Center, unknown paths, query failures, portable exclusion and unchanged state.'
+    }
+    finally
+    {
+        $resolvedRoot = [IO.Path]::GetFullPath($temporaryRoot)
+        $temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        if (-not $resolvedRoot.StartsWith($temporaryParent, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($resolvedRoot) -notlike 'bafx-preflight-*')
+        {
+            throw 'Refusing to remove a preflight fixture outside its temporary directory.'
+        }
+        Remove-Item -LiteralPath $temporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-InstallerLogArchive
@@ -1139,6 +1262,12 @@ function Test-InstallerScriptWhitelist
         -Text $unregisterMachine `
         -Pattern 'ensure-host-process-stopped[\s\S]*remove-installed-user-startup-registration[\s\S]*remove-installed-user-package[\s\S]*remove-owned-certificates' `
         -Description 'machine uninstall reports stable resource cleanup steps'
+    $uninstallEntry = $unregisterMachine.Substring(
+        $unregisterMachine.IndexOf("`$script:InstallerStep = 'validate-administrator'"))
+    Assert-TextContains `
+        -Text $uninstallEntry `
+        -Pattern 'validate-powershell[\s\S]*resolve-install-root[\s\S]*ensure-host-process-stopped[\s\S]*ensure-control-center-process-stopped[\s\S]*if\s*\(\$CheckProcessesOnly\)[\s\S]*exit\s+0[\s\S]*check-pending-installation-transaction[\s\S]*write-uninstall-journal' `
+        -Description 'read-only process checks precede transaction access and journal writes'
     Assert-TextContains `
         -Text $unregisterMachine `
         -Pattern 'function\s+Read-UninstallCompletionMarker[\s\S]*stateRemoved[\s\S]*Read-UninstallJournal' `
@@ -1724,6 +1853,10 @@ function Test-InnoPayloadContract
         -Text $uninstallCode.Value `
         -Pattern '\bShow(?:RecoveryFailure|RetainedRecovery)\s*\(' `
         -Description 'uninstall recovery failures must abort instead of returning to Inno cleanup'
+    Assert-TextContains `
+        -Text $uninstallCode.Value `
+        -Pattern 'SupportsProcessCheck[\s\S]*-CheckProcessesOnly[\s\S]*UserContextPath\s*:=\s*CreateOriginalUserStatePath[\s\S]*RollbackAction RemoveNew' `
+        -Description 'uninstall verifies process-only support and checks before any pending rollback'
     Assert-TextContains `
         -Text $uninstallCode.Value `
         -Pattern 'RollbackAction RemoveNew[\s\S]*-Phase Rollback[\s\S]*RollbackAction RestorePrevious[\s\S]*-Phase RollbackCleanup' `
@@ -4192,6 +4325,7 @@ Test-ProtectedAclIdentityResolutionContract
 & (Join-Path $repositoryRoot 'tools/verify-installer-directory-acl.ps1') -RepositoryRoot $repositoryRoot
 Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
+Test-UninstallerReadOnlyPreflight
 Test-CertificateLifecycleBoundaryContract
 & (Join-Path $repositoryRoot 'tools/verify-installer-identity-recovery.ps1') -RepositoryRoot $repositoryRoot
 Test-VersionMapping

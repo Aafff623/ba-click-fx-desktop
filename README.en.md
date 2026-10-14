@@ -69,8 +69,8 @@ The version check never downloads or installs updates automatically.
 
 Portable stores `BAFX.config.json`, `fx-profiles`, and logs beside the executables; installed builds use the installation directory's `data` folder.
 Include the language preference file `BAFX.ControlCenter.language` from the same directory in your backup.
-Uninstall through the Start Menu or Windows Installed apps. Uninstall preserves `data` by default; for a complete reset, back it up,
-exit the applications, uninstall, then delete that folder.
+Exit Host and Control Center before uninstalling through the Start Menu or Windows Installed apps. Uninstall preserves `data` by default;
+for a complete reset, back it up, uninstall successfully, then delete that folder.
 
 ## Settings and rendering modes
 

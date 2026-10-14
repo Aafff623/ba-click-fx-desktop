@@ -99,6 +99,12 @@ english.RollbackPendingInstallation=Rolling back the pending installation
 chinesesimplified.RollbackPendingInstallation=回滚未完成的安装
 english.RemoveMachineIdentity=Removing the machine identity
 chinesesimplified.RemoveMachineIdentity=移除计算机身份
+english.CheckRunningApplications=Checking running applications
+chinesesimplified.CheckRunningApplications=检查正在运行的应用程序
+english.CloseApplicationsBeforeUninstall=Please exit Host and Control Center from this installation, then run uninstall again. Installation files and recovery state were retained.
+chinesesimplified.CloseApplicationsBeforeUninstall=请先退出本安装目录中的 Host 和控制中心，然后重新运行卸载。安装文件和恢复状态已保留。
+english.RuntimeCheckScriptUnavailable=The process check script is missing or unsupported. Installation files and recovery state were retained; repair or upgrade the installation before uninstalling.
+chinesesimplified.RuntimeCheckScriptUnavailable=进程检查脚本缺失或不受支持。安装文件和恢复状态已保留；请先修复或升级安装，再执行卸载。
 english.RollbackRecovery=Rollback also failed. The installation files and recovery state were retained; reopen Control Center to repair the installation.
 chinesesimplified.RollbackRecovery=回滚也失败了。安装文件和恢复状态已保留；请重新打开控制中心修复安装。
 english.FinalizeRepair=The package was committed, but final cleanup needs another repair pass from Control Center.
@@ -1647,6 +1653,20 @@ begin
   DeleteTransientState;
 end;
 
+function SupportsProcessCheck(const ScriptPath: String): Boolean;
+var
+  ScriptText: AnsiString;
+begin
+  // A pending upgrade may expose an older script. Do not pass a new switch
+  // to that script or silently bypass the read-only preflight.
+  Result := False;
+  if FileExists(ScriptPath) and AssertNoReparsePointPath(ScriptPath) and
+    LoadStringFromFile(ScriptPath, ScriptText) then
+  begin
+    Result := Pos('[switch]$CheckProcessesOnly', String(ScriptText)) > 0;
+  end;
+end;
+
 // Returning from this event does not cancel Inno cleanup. Recovery failures
 // must raise before Inno removes its files, shortcuts, or uninstall entry.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -1664,7 +1684,7 @@ begin
   begin
     Exit;
   end;
-  InstallRoot := ExpandConstant('{app}');
+  InstallRoot := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
   SetupFailureExitCode := 1001;
   PayloadRoot := AddBackslash(InstallRoot) + '.staging\current';
   InstallerRoot := AddBackslash(InstallRoot) + 'Installer';
@@ -1673,6 +1693,45 @@ begin
   InstallStatePath := AddBackslash(InstallerRoot) + 'INSTALL-STATE.json';
   UninstallCompleteMarkerPath :=
     AddBackslash(InstallerRoot) + 'UNINSTALL-COMPLETE.json';
+  // Check before rollback: it can overwrite the same live EXEs as uninstall.
+  // The elevated helper checks exact image paths across Windows sessions.
+  ScriptPath := ResolveRollbackScript(
+    InstallRoot, StagedInstallerRoot, 'unregister-machine.ps1');
+  if not SupportsProcessCheck(ScriptPath) then
+  begin
+    ScriptPath := AddBackslash(InstallerRoot) + 'unregister-machine.ps1';
+  end;
+  if SupportsProcessCheck(ScriptPath) then
+  begin
+    UninstallProgressForm.StatusLabel.Caption := CustomMessage('CheckRunningApplications');
+    if not RunPowerShell(
+      ScriptPath,
+      '-CheckProcessesOnly -InstallDirectory ' + QuoteArgument(InstallRoot),
+      False, '', ExitCode) then
+    begin
+      RaiseInstallerFailure(
+        FormatPowerShellFailure(
+          CustomMessage('CheckRunningApplications'), False, ExitCode) + #13#10#13#10 +
+        CustomMessage('CloseApplicationsBeforeUninstall'), 1001);
+    end;
+    if ExitCode <> 0 then
+    begin
+      RaiseInstallerFailure(
+        FormatPowerShellFailure(
+          CustomMessage('CheckRunningApplications'), True, ExitCode) + #13#10#13#10 +
+        CustomMessage('CloseApplicationsBeforeUninstall'), 1001);
+    end;
+  end
+  else if FileExists(AddBackslash(InstallRoot) + 'ba-click-fx-desktop.exe') or
+    FileExists(AddBackslash(InstallRoot) + 'BAFX.ControlCenter.exe') or
+    FileExists(InstallStatePath) or FileExists(InstallStatePath + '.bak') or
+    FileExists(MachineStatePath) or DirExists(InstallerRoot) or
+    DirExists(StagedInstallerRoot) or DirExists(AddBackslash(InstallRoot) + '.rollback') then
+  begin
+    // Only a failed first install with no runtime or recovery material can
+    // use the existing payload-only cleanup without a process-check helper.
+    RaiseInstallerFailure(CustomMessage('RuntimeCheckScriptUnavailable'), 1001);
+  end;
   UserContextPath := CreateOriginalUserStatePath();
   RegistrationResultPath := CreateOriginalUserStatePath();
   if FileExists(MachineStatePath) then

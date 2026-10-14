@@ -287,6 +287,15 @@ Package 注册和 Control Center 快捷方式创建。安装完成后打开 Cont
 下的 `data` 用户配置；卸载会按安装用户 SID 删除本程序自己的 `BAFX Control Center` 开机启动值，
 不删除 Run 键或其他程序的启动项。需要无管理员权限时可改用 portable ZIP，但它没有 Package Identity。
 
+卸载前请退出本安装目录中的 Host 和控制中心。卸载器先只读检查进程，程序仍运行或无法核实进程路径时会中止；
+退出后重新运行卸载即可重试，不会自动结束进程。同名的其他目录实例不影响卸载。挂起安装的回滚失败时，卸载会中止并保留
+卸载入口、暂存文件和恢复状态；请保留日志及材料后修复安装，不要手动删除状态文件。
+
+Before uninstalling, exit Host and Control Center from this installation. The uninstaller checks running processes before recovery or cleanup;
+if an installed process is running or its executable path cannot be verified, it stops without terminating processes. Exit the applications and
+run uninstall again. Verified instances in other directories are ignored. Failed recovery stops uninstall and retains the uninstaller,
+staged files and recovery state; keep the logs and recovery materials, then repair the installation.
+
 系统页显示“安装版”表示 `INSTALL-STATE.json` 与 `.bak` 状态文件完整成对、属于同一事务且内容相符（新格式要求
 摘要一致，兼容的旧格式要求内容完全一致），产品版本和 Package 版本也匹配当前 Control Center；主状态和备份都不存在时显示“便携版”。状态文件损坏、不一致、只剩一份、
 版本冲突、部分升级或挂起安装事务都会显示“安装状态异常”，并且 Host 保持 fail-closed，不会把单独备份视为有效状态。

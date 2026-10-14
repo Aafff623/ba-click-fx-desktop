@@ -68,7 +68,8 @@ Get-Content -LiteralPath '.\下载的完整文件名.sha256'
 
 Portable 将 `BAFX.config.json`、`fx-profiles` 和日志保存在 EXE 目录；安装版保存在安装目录的 `data` 子目录。
 备份时一并保留同目录的语言偏好文件 `BAFX.ControlCenter.language`。
-卸载使用开始菜单卸载项或 Windows“已安装的应用”，默认保留 `data`；需彻底清理时先备份，退出程序并卸载后再删除该目录。
+卸载前请先退出 Host 和控制中心，再使用开始菜单卸载项或 Windows“已安装的应用”。卸载默认保留 `data`；
+需彻底清理时先备份，卸载成功后再删除该目录。
 
 ## 常用设置与渲染模式
 

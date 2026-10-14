@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$InstallDirectory
+    [string]$InstallDirectory,
+
+    [switch]$CheckProcessesOnly
 )
 
 Set-StrictMode -Version Latest
@@ -32,15 +34,20 @@ function Assert-ExpectedProcessIsStopped
     )
 
     $expected = [IO.Path]::GetFullPath($ExecutablePath)
-    $running = Get-CimInstance Win32_Process -Filter "Name='$([IO.Path]::GetFileName($expected))'" |
-        Where-Object {
-            (-not [string]::IsNullOrWhiteSpace($_.ExecutablePath)) -and
-                ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $expected)
-        } |
-        Select-Object -First 1
-    if ($null -ne $running)
+    $running = @(Get-CimInstance Win32_Process `
+        -Filter "Name='$([IO.Path]::GetFileName($expected))'" -ErrorAction Stop)
+    foreach ($process in $running)
     {
-        throw "Close the running application before uninstalling: $expected"
+        # An unreadable image path cannot prove that cleanup is safe, including
+        # when another Windows session owns the process. Never guess by name.
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath))
+        {
+            throw "Cannot verify the executable path of a running application: $expected"
+        }
+        if ([IO.Path]::GetFullPath([string]$process.ExecutablePath) -eq $expected)
+        {
+            throw "Close the running application before uninstalling: $expected"
+        }
     }
 }
 
@@ -1483,6 +1490,18 @@ $installRoot = Resolve-ProtectedProgramFilesPath `
     -Path $InstallDirectory `
     -Description 'uninstall directory'
 Assert-NoReparsePath -Path $installRoot
+
+# Rollback can replace live binaries too. This read-only entry point works
+# without committed state and must return before reading or writing journals.
+$script:InstallerStep = 'ensure-host-process-stopped'
+Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $installRoot 'ba-click-fx-desktop.exe')
+$script:InstallerStep = 'ensure-control-center-process-stopped'
+Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $installRoot 'BAFX.ControlCenter.exe')
+if ($CheckProcessesOnly)
+{
+    exit 0
+}
+
 $statePath = Join-Path $installRoot 'Installer\INSTALL-STATE.json'
 $uninstallCompleteMarkerPath = Join-Path $installRoot 'Installer\UNINSTALL-COMPLETE.json'
 $uninstallJournalPath = Join-Path $installRoot 'Installer\UNINSTALL-STATE.json'
@@ -1602,11 +1621,6 @@ if ($null -eq $uninstallJournal)
         -State $state `
         -Phase 'started'
 }
-
-$script:InstallerStep = 'ensure-host-process-stopped'
-Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $installRoot 'ba-click-fx-desktop.exe')
-$script:InstallerStep = 'ensure-control-center-process-stopped'
-Assert-ExpectedProcessIsStopped -ExecutablePath (Join-Path $installRoot 'BAFX.ControlCenter.exe')
 
 $script:InstallerStep = 'mark-user-package-removal'
 Write-UninstallJournal `
