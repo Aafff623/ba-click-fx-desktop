@@ -194,6 +194,7 @@ try
             'Get-ExplicitlyOwnedCertificateThumbprints', 'Write-Utf8NoBom', 'Copy-VerifiedInstallerFile',
             'Assert-FileHash', 'Get-IdentityTemplateContentHash', 'Get-CertificateSha256', 'Assert-IdentityIntegrityMaterial',
             'Assert-InstallStatePair', 'Assert-InstallStateObject', 'Read-OldInstallState',
+            'Read-StartedUninstallJournal', 'Move-SupersededUninstallJournal', 'Complete-CommittedPendingTransaction',
             'Invoke-PendingRollbackCleanup', 'Remove-PendingPackageFiles')
         Get-ProbeFunction 'tools/installer/unregister-machine.ps1' @('Get-UninstallPhaseRank', 'Assert-InstallStateIntegrity')
         Get-ProbeFunction 'tools/installer/register-user-package.ps1' @('Restore-PreviousPackage',
@@ -256,6 +257,8 @@ function Write-Result { param($Succeeded, $Package, $State, $ErrorMessage)
 function Stop-RegistrationWithFailure { param($ErrorRecord, $Step, $ResultErrorMessage)
     $script:FailureStep = $Step }
 function Remove-PreparedCertificateIfUnused { param($State, $InstallRoot) }
+function Remove-ObsoleteIdentityArtifacts { param($State) return $State }
+function Ensure-RollbackEvidenceAcl { param($RollbackRoot) }
 function Remove-EmptyRollbackDirectories { param($InstallRoot) }
 function Remove-CompletedRollbackEvidence { param($InstallRoot, $TransactionId)
     $evidence = Join-Path $InstallRoot ('.rollback\' + $TransactionId)
@@ -399,12 +402,51 @@ Export-ModuleMember -Function @()
         if ($script:Events.Count -ne 0) { throw 'Cleanup retry changed the restored registration.' }
     } $completed $root $payload $pending
     Assert-Probe (-not (Test-Path -LiteralPath $pending)) 'Cleanup retry left its pending journal.'
+    # An old started uninstall journal must survive failed validation, then be
+    # archived after a valid commit even if cleanup is interrupted and retried.
+    $uninstallPath = Join-Path $root 'Installer\UNINSTALL-STATE.json'
+    $staleJson = [ordered]@{
+        schema = 1; transactionId = $old.transactionId; stateDigest = $old.stateDigest
+        phase = 'started'; updatedUtc = '2026-01-01T00:00:00Z'
+    } | ConvertTo-Json
+    [IO.File]::WriteAllText($uninstallPath, $staleJson)
+    $archiveStale = { param($Root, $Sid)
+        Move-SupersededUninstallJournal -InstallRoot $Root -UserSid $Sid }
+    [IO.File]::AppendAllText($hostPath, 'tamper')
+    Assert-ProbeFailure { & $module $archiveStale $root $old.installedUserSid }
+    Assert-Probe ([IO.File]::ReadAllText($uninstallPath) -ceq $staleJson) 'Damaged Host lost uninstall evidence.'
+    [IO.File]::WriteAllText($hostPath, 'unchanged historical Host fixture')
+    $currentJson = [IO.File]::ReadAllText($statePath)
+    [IO.File]::AppendAllText("$statePath.bak", "`n")
+    Assert-ProbeFailure { & $module $archiveStale $root $old.installedUserSid }
+    Assert-Probe ([IO.File]::ReadAllText($uninstallPath) -ceq $staleJson) 'Torn state pair lost uninstall evidence.'
+    [IO.File]::WriteAllText("$statePath.bak", $currentJson)
+    & $module { $script:TrustMissing = $true }
+    Assert-ProbeFailure { & $module $archiveStale $root $old.installedUserSid }
+    Assert-Probe ([IO.File]::ReadAllText($uninstallPath) -ceq $staleJson) 'Missing certificate lost uninstall evidence.'
+    & $module { $script:TrustMissing = $false; $script:FailCleanup = $true }
+    $cleanupState = [pscustomobject]@{
+        transactionId = $committed.transactionId; userSid = $committed.installedUserSid
+    }
+    [IO.File]::WriteAllText($pending, ($cleanupState | ConvertTo-Json))
+    Assert-ProbeFailure { & $module { param($State, $Root, $Path)
+        Complete-CommittedPendingTransaction -State $State -InstallRoot $Root -PendingPath $Path
+    } $cleanupState $root $pending }
+    Assert-Probe (-not (Test-Path -LiteralPath $uninstallPath)) 'Commit recovery left the stale journal active.'
+    Assert-Probe (Test-Path -LiteralPath $pending) 'Interrupted cleanup removed the pending recovery journal.'
+    $archives = @(Get-ChildItem -LiteralPath (Join-Path $root 'Installer') -Filter '*.stale.json')
+    Assert-Probe ($archives.Count -eq 1 -and [IO.File]::ReadAllText($archives[0].FullName) -ceq $staleJson) 'Commit recovery did not preserve original uninstall evidence.'
+    & $module { param($State, $Root, $Path)
+        Complete-CommittedPendingTransaction -State $State -InstallRoot $Root -PendingPath $Path
+    } $cleanupState $root $pending
+    Assert-Probe (-not (Test-Path -LiteralPath $pending)) 'Committed cleanup retry left the pending journal.'
+    Assert-Probe (@(Get-ChildItem -LiteralPath (Join-Path $root 'Installer') -Filter '*.stale.json').Count -eq 1) 'Committed cleanup retry duplicated uninstall archives.'
     $damaged = $oldJson | ConvertFrom-Json
     $damaged.certificateSha256 = '0' * 64
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $damaged -PackagePath $package }
     [IO.File]::AppendAllText($package, 'tamper')
     Assert-ProbeFailure { Assert-RecordedPackageSigner -State $old -PackagePath $package }
-    Write-Host 'Identity recovery verified: missing trust repair/uninstall, expired CMS signer, fresh rollback, same-version/upgrade registration failure, cleanup interruption retry and tamper rejection.'
+    Write-Host 'Identity recovery verified: missing trust repair/uninstall, expired CMS signer, fresh rollback, same-version/upgrade registration failure, stale uninstall archival with interrupted commit cleanup retry and tamper rejection.'
 }
 finally
 {

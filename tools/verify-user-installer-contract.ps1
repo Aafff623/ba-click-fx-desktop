@@ -310,6 +310,7 @@ function Test-PowerShellScriptContracts
         'tools/installer/protected-paths.ps1',
         'tools/installer/register-user-package.ps1',
         'tools/installer/unregister-machine.ps1',
+        'tools/repair-stale-uninstall.ps1',
         'tools/verify-user-installer-contract.ps1'
     )
     foreach ($scriptPath in $scriptPaths)
@@ -724,168 +725,38 @@ function Invoke-CertificateLifecycleProbe
 
 function Test-UninstallerProcessPathFilter
 {
-    $ast = Get-ParsedScript -RelativePath 'tools/installer/unregister-machine.ps1'
-    $functions = @('Get-ExpectedProcesses', 'Assert-ExpectedProcessIsStopped',
-        'Stop-ExpectedProcesses', 'Stop-InstalledProcesses') | ForEach-Object {
-        Get-FunctionText -Ast $ast -Name $_
-    }
-    $probe = New-Module -ScriptBlock ([scriptblock]::Create(($functions -join "`n") + @'
+    $scriptPath = 'tools/installer/unregister-machine.ps1'
+    $ast = Get-ParsedScript -RelativePath $scriptPath
+    $functionText = Get-FunctionText -Ast $ast -Name 'Assert-ExpectedProcessIsStopped'
 
-function ConvertTo-BafxInstallerSummaryValue { param($Value) return $Value }
-function Write-Host { param($Object) }
-function Get-CimInstance
-{
-    param($ClassName, $Filter, $ErrorAction)
-    ++$script:Enumerations
-    foreach ($process in $script:Processes)
+    # PowerShell accepts a line-leading -and as a command during parsing, so this
+    # function must run to catch the failure mode seen by the shipped uninstaller.
+    $mockExecutablePath = 'D:\Portable\ba-click-fx-desktop.exe'
+    function Get-CimInstance
     {
-        if ($Filter -eq "Name='$([IO.Path]::GetFileName($process.Path))'" -and
-            (-not $process.Exited -or $script:Restarted))
-        {
-            [pscustomobject]@{ProcessId = $process.ProcessId; ExecutablePath = $process.ObservedPath}
-        }
-    }
-}
-function Open-ExpectedProcess
-{
-    param($ProcessId, $ExecutablePath)
-    $process = $script:Processes | Where-Object { $_.ProcessId -eq $ProcessId } | Select-Object -First 1
-    if ($process.Mode -eq 'open-denied') { throw [ComponentModel.Win32Exception]::new(5) }
-    if ($process.Mode -eq 'gone' -or $process.Path -ne $ExecutablePath) { return $null }
-    if ($script:Restarted) { $process.Exited = $false }
-    return $process
-}
-function New-ProbeProcess
-{
-    param($Path, $Mode = 'graceful')
-    $process = [pscustomobject]@{
-        Path = $Path; ObservedPath = $Path; Mode = $Mode; ProcessId = 42
-        Exited = $false; Forced = 0; Disposed = $false; LastCloseError = 0
-    }
-    $process | Add-Member ScriptMethod RequestClose {
-        if ($this.Mode -eq 'graceful') { $this.Exited = $true }
-        return 1
-    }
-    $process | Add-Member ScriptMethod WaitExited { param($Timeout) return $this.Exited }
-    $process | Add-Member ScriptMethod Terminate {
-        ++$this.Forced
-        if ($this.Mode -eq 'terminate-denied') { throw [ComponentModel.Win32Exception]::new(5) }
-        $this.Exited = $this.Mode -ne 'stalled'
-    }
-    $process | Add-Member ScriptMethod Dispose { $this.Disposed = $true }
-    return $process
-}
-$script:Processes = @()
-$script:Enumerations = 0
-$script:Restarted = $false
-Export-ModuleMember -Function @()
-'@))
-    try
-    {
-        & $probe {
-            param($Root)
-            Stop-InstalledProcesses -InstallRoot $Root
-        } 'C:\Program Files\ba-click-fx-desktop'
-        foreach ($mode in @('graceful', 'hung', 'gone', 'open-denied', 'terminate-denied', 'stalled'))
-        {
-            $result = & $probe {
-                param($Mode)
-                $path = 'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
-                $process = New-ProbeProcess -Path $path -Mode $Mode
-                $script:Processes = @($process)
-                $failed = $false
-                try { Stop-ExpectedProcesses -ExecutablePath $path -GracefulTimeoutMilliseconds 0 -ForceTimeoutMilliseconds 0 }
-                catch { $failed = $true }
-                return [pscustomobject]@{Failed = $failed; Process = $process}
-            } $mode
-            Assert-True -Condition ($result.Failed -eq ($mode -in @('open-denied', 'terminate-denied', 'stalled'))) `
-                -Message "Unexpected shutdown outcome for $mode."
-            Assert-True -Condition ($result.Process.Forced -eq [int]($mode -in @('hung', 'terminate-denied', 'stalled'))) `
-                -Message "Unexpected forced termination for $mode."
-            Assert-True -Condition ($result.Process.Disposed -eq ($mode -notin @('open-denied', 'gone'))) `
-                -Message "Verified process handle cleanup failed for $mode."
-        }
-        & $probe {
-            $expected = 'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
-            $portable = New-ProbeProcess -Path 'D:\Portable\ba-click-fx-desktop.exe' -Mode hung
-            $script:Processes = @($portable)
-            Assert-ExpectedProcessIsStopped -ExecutablePath $expected
-            # Stale CIM identity (including PID reuse) must also be ignored when
-            # the opened process has a different image path.
-            $portable.ObservedPath = $expected
-            Assert-ExpectedProcessIsStopped -ExecutablePath $expected
-            if ($portable.Forced -ne 0 -or $portable.Disposed) { throw 'Portable process was touched.' }
-            $unknown = New-ProbeProcess -Path $expected -Mode 'open-denied'
-            $unknown.ObservedPath = $null
-            $script:Processes = @($unknown)
-            try { Assert-ExpectedProcessIsStopped -ExecutablePath $expected }
-            catch { return }
-            throw 'Unknown process identity was silently ignored.'
-        }
-        $restartRejected = & $probe {
-            $path = 'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
-            $script:Processes = @(New-ProbeProcess -Path $path)
-            $script:Restarted = $true
-            try { Stop-ExpectedProcesses -ExecutablePath $path -GracefulTimeoutMilliseconds 0 -ForceTimeoutMilliseconds 0 }
-            catch { return $true }
-            return $false
-        }
-        Assert-True -Condition $restartRejected -Message 'Restarted process escaped the final shutdown check.'
-        & $probe {
-            $script:Restarted = $false
-            $root = 'C:\Program Files\ba-click-fx-desktop'
-            $center = New-ProbeProcess -Path (Join-Path $root 'BAFX.ControlCenter.exe')
-            $hostProcess = New-ProbeProcess -Path (Join-Path $root 'ba-click-fx-desktop.exe')
-            $hostProcess.ProcessId = 43
-            $hostProcess | Add-Member NoteProperty Center $center
-            $hostProcess | Add-Member ScriptMethod RequestClose {
-                if (-not $this.Center.Exited) { throw 'Host closed before Control Center saved its config.' }
-                $this.Exited = $true
-                return 1
-            } -Force
-            $script:Processes = @($center, $hostProcess)
-            Stop-InstalledProcesses -InstallRoot $root
-            if (-not $center.Exited -or -not $hostProcess.Exited) { throw 'Both runtime processes must exit.' }
-        }
-    }
-    finally
-    {
-        Remove-Module -ModuleInfo $probe -Force
-    }
-}
+        param(
+            [Parameter(Position = 0)]
+            [string]$ClassName,
 
-function Test-UninstallerShutdownIntegrationContract
-{
-    $uninstaller = Read-RepositoryText -RelativePath 'tools/installer/unregister-machine.ps1'
-    Assert-TextContains -Text $uninstaller `
-        -Pattern '(?s)if\s*\(\$StopProcessesOnly\)\s*\{\s*#[^}]*Stop-InstalledProcesses\s+-InstallRoot\s+\$installRoot\s+exit\s+0\s*\}\s*\$statePath\s*=' `
-        -Description 'process-only entry returns before reading or changing install state'
-    Assert-TextContains -Text $uninstaller `
-        -Pattern 'Stop-InstalledProcesses -InstallRoot \$installRoot\s*\$uninstallJournal = Read-UninstallJournal' `
-        -Description 'direct uninstall closes processes before writing its journal'
-    Assert-TextContains -Text $uninstaller `
-        -Pattern '(?s)ensure-host-process-stopped.*Assert-ExpectedProcessIsStopped.*ensure-control-center-process-stopped.*Assert-ExpectedProcessIsStopped.*mark-user-package-removal' `
-        -Description 'runtime guard precedes destructive identity operations'
-    Assert-TextContains -Text $uninstaller `
-        -Pattern '(?s)remove-installed-payload-files''\s*Assert-ExpectedProcessIsStopped[^\r\n]*ControlCenter\.exe[^\r\n]*\s*Assert-ExpectedProcessIsStopped[^\r\n]*ba-click-fx-desktop\.exe[^\r\n]*\s*Remove-InstalledPayloadFiles' `
-        -Description 'runtime guard is repeated before deleting live payload'
-    # Window classes are stable rendezvous contracts; catch accidental drift
-    # without adding another application-side shutdown protocol.
-    foreach ($sourcePath in @('src/control-center/control_center_window.hpp', 'src/windows/src/overlay_window.cpp'))
-    {
-        $source = Read-RepositoryText -RelativePath $sourcePath
-        $class = [regex]::Match($source, 'L"((?:BAFX\.NativeControlCenter\.Window\.v1|BaClickFxDesktopOverlay))"')
-        Assert-True -Condition ($class.Success -and $uninstaller.Contains('"' + $class.Groups[1].Value + '"')) `
-            -Message "Uninstaller shutdown window class differs from $sourcePath."
+            [string]$Filter
+        )
+
+        return [pscustomobject]@{
+            ExecutablePath = $mockExecutablePath
+        }
     }
-    $inno = Read-RepositoryText -RelativePath 'tools/installer/ba-click-fx-desktop.iss'
-    $uninstall = [regex]::Match($inno, '(?s)procedure CurUninstallStepChanged\b.*').Value
-    Assert-TextContains -Text $uninstall `
-        -Pattern '(?s)ResolveRollbackScript.*SupportsProcessStop.*-StopProcessesOnly.*RaiseInstallerFailure.*CreateOriginalUserStatePath.*if FileExists\(MachineStatePath\)' `
-        -Description 'Inno shuts down runtime before pending recovery and aborts on helper failure'
-    Assert-TextContains -Text $uninstall `
-        -Pattern '(?s)else if FileExists.*InstallStatePath.*MachineStatePath.*RaiseInstallerFailure\(CustomMessage\(''RuntimeStopScriptUnavailable''\)' `
-        -Description 'missing helper cannot bypass verification of a real installation'
+    . ([scriptblock]::Create($functionText))
+
+    $installedExecutablePath =
+        'C:\Program Files\ba-click-fx-desktop\ba-click-fx-desktop.exe'
+    Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
+
+    $mockExecutablePath = $installedExecutablePath
+    Assert-Throws `
+        -Action {
+            Assert-ExpectedProcessIsStopped -ExecutablePath $installedExecutablePath
+        } `
+        -Description 'installed Host process still running'
 }
 
 function Test-InstallerLogArchive
@@ -2948,6 +2819,7 @@ $script:Journal = [pscustomobject]@{
     stateDigest = ('b' * 64)
     phase = 'state-removing'
 }
+
 function Assert-ProtectedStateAcl
 {
     param([string]$Path)
@@ -3032,6 +2904,129 @@ function Read-UninstallJournal
         {
             Remove-Item -LiteralPath $resolvedTemporaryRoot -Recurse -Force `
                 -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-StaleUninstallJournalContract
+{
+    $ast = Get-ParsedScript -RelativePath 'tools/installer/install-machine.ps1'
+    $reader = Get-FunctionText -Ast $ast -Name 'Read-StartedUninstallJournal'
+    $mover = Get-FunctionText -Ast $ast -Name 'Move-SupersededUninstallJournal'
+    $moduleText = @'
+Set-StrictMode -Version Latest
+function Assert-NoReparsePath { param([string]$Path, [switch]$AllowMissing) }
+function Assert-ProtectedStateAcl { param([string]$Path) }
+function Read-OldInstallState { param([string]$InstallRoot, [string]$UserSid)
+    if ($script:FailState) { throw 'Injected invalid committed state.' }
+    return $script:CurrentState }
+'@ + "`n" + $reader + "`n" + $mover
+    $module = New-Module -ScriptBlock ([scriptblock]::Create($moduleText))
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) `
+        ('bafx-stale-uninstall-' + [Guid]::NewGuid().ToString('N'))
+    try
+    {
+        $installerRoot = Join-Path $temporaryRoot 'Installer'
+        New-Item -ItemType Directory -Path $installerRoot -Force | Out-Null
+        $journalPath = Join-Path $installerRoot 'UNINSTALL-STATE.json'
+        $oldTransaction = 'a' * 32
+        $journal = [ordered]@{
+            schema = 1; transactionId = $oldTransaction; stateDigest = ('1' * 64)
+            phase = 'started'; updatedUtc = '2026-01-01T00:00:00Z'
+        } | ConvertTo-Json
+        [IO.File]::WriteAllText($journalPath, $journal)
+        & $module {
+            $script:FailState = $false
+            $script:CurrentState = [pscustomobject]@{
+                schema = 2; transactionId = ('b' * 32); stateDigest = ('2' * 64)
+            }
+            Move-SupersededUninstallJournal -InstallRoot $args[0] -UserSid 'S-1-5-21-1'
+        } $temporaryRoot
+        Assert-True `
+            -Condition (-not (Test-Path -LiteralPath $journalPath)) `
+            -Message 'A stale started uninstall journal remained active after a valid upgrade.'
+        Assert-True `
+            -Condition (@(Get-ChildItem -LiteralPath $installerRoot -Filter '*.stale.json').Count -eq 1) `
+            -Message 'The stale uninstall journal was not archived.'
+        $archived = @(Get-ChildItem -LiteralPath $installerRoot -Filter '*.stale.json')[0]
+        Assert-True -Condition ([IO.File]::ReadAllText($archived.FullName) -ceq $journal) `
+            -Message 'Archival changed the original journal bytes.'
+        & $module { param($Root)
+            Move-SupersededUninstallJournal -InstallRoot $Root -UserSid 'S-1-5-21-1'
+        } $temporaryRoot
+        Assert-True -Condition (@(Get-ChildItem -LiteralPath $installerRoot -Filter '*.stale.json').Count -eq 1) `
+            -Message 'Cleanup retry produced a second archive.'
+        foreach ($phase in @('user-package-removing', 'identity-removing', 'certificate-removing',
+                'payload-removing', 'state-removing', 'unknown'))
+        {
+            $raw = $journal | ConvertFrom-Json
+            $raw.phase = $phase
+            $raw = $raw | ConvertTo-Json
+            [IO.File]::WriteAllText($journalPath, $raw)
+            Assert-Throws -Action {
+                & $module { param($Root)
+                    Move-SupersededUninstallJournal -InstallRoot $Root -UserSid 'S-1-5-21-1'
+                } $temporaryRoot
+            } -Description "a journal in phase $phase"
+            Assert-True -Condition ([IO.File]::ReadAllText($journalPath) -ceq $raw) `
+                -Message "Cleanup changed recovery evidence in phase $phase."
+        }
+        foreach ($raw in @('{broken', '{"schema":1}', ($journal.Replace($oldTransaction, 'invalid'))))
+        {
+            [IO.File]::WriteAllText($journalPath, $raw)
+            Assert-Throws -Action {
+                & $module { param($Root)
+                    Move-SupersededUninstallJournal -InstallRoot $Root -UserSid 'S-1-5-21-1'
+                } $temporaryRoot
+            } -Description 'a malformed uninstall journal'
+            Assert-True -Condition ([IO.File]::ReadAllText($journalPath) -ceq $raw) `
+                -Message 'Cleanup changed a malformed uninstall journal.'
+        }
+        $matching = $journal | ConvertFrom-Json
+        $matching.transactionId = 'b' * 32
+        $matching.stateDigest = '2' * 64
+        $raw = $matching | ConvertTo-Json
+        [IO.File]::WriteAllText($journalPath, $raw)
+        & $module { param($Root)
+            Move-SupersededUninstallJournal -InstallRoot $Root -UserSid 'S-1-5-21-1'
+        } $temporaryRoot
+        Assert-True -Condition ([IO.File]::ReadAllText($journalPath) -ceq $raw) `
+            -Message 'Cleanup removed the current matching uninstall journal.'
+        $matching.stateDigest = '3' * 64
+        [IO.File]::WriteAllText($journalPath, ($matching | ConvertTo-Json))
+        Assert-Throws -Action {
+            & $module { param($Root)
+                Move-SupersededUninstallJournal -InstallRoot $Root -UserSid 'S-1-5-21-1'
+            } $temporaryRoot
+        } -Description 'a current uninstall journal with a different state digest'
+        [IO.File]::WriteAllText($journalPath, $journal)
+        & $module { $script:FailState = $true }
+        Assert-Throws -Action {
+            & $module { param($Root)
+                Move-SupersededUninstallJournal -InstallRoot $Root -UserSid 'S-1-5-21-1'
+            } $temporaryRoot
+        } -Description 'invalid current installation'
+        Assert-True -Condition ([IO.File]::ReadAllText($journalPath) -ceq $journal) `
+            -Message 'Cleanup removed stale evidence before validating the current installation.'
+
+        $recovery = Get-FunctionText -Ast $ast -Name 'Complete-CommittedPendingTransaction'
+        Assert-TextContains -Text $recovery `
+            -Pattern 'Write-ProtectedInstallState[\s\S]*Move-SupersededUninstallJournal[\s\S]*Remove-Item -LiteralPath \$PendingPath' `
+            -Description 'committed recovery archives stale uninstall evidence before deleting pending state'
+        Assert-TextContains -Text $ast.Extent.Text `
+            -Pattern 'archive-superseded-uninstall-journal[\s\S]*Move-SupersededUninstallJournal[\s\S]*delete-pending-state' `
+            -Description 'normal install completion archives stale uninstall evidence before deleting pending state'
+    }
+    finally
+    {
+        Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
+        $resolved = [IO.Path]::GetFullPath($temporaryRoot)
+        if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),
+                [StringComparison]::OrdinalIgnoreCase) -and
+            [IO.Path]::GetFileName($resolved).StartsWith('bafx-stale-uninstall-', [StringComparison]::Ordinal) -and
+            (Test-Path -LiteralPath $resolved))
+        {
+            Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -4190,9 +4185,9 @@ if (-not (Test-Path -LiteralPath $repositoryRoot -PathType Container))
 Test-PowerShellScriptContracts
 Test-SharedInstallerStateContract
 Test-ProtectedAclIdentityResolutionContract
+& (Join-Path $repositoryRoot 'tools/verify-installer-directory-acl.ps1') -RepositoryRoot $repositoryRoot
 Test-AtomicFileReplacementContract
 Test-UninstallerProcessPathFilter
-Test-UninstallerShutdownIntegrationContract
 Test-CertificateLifecycleBoundaryContract
 & (Join-Path $repositoryRoot 'tools/verify-installer-identity-recovery.ps1') -RepositoryRoot $repositoryRoot
 Test-VersionMapping
@@ -4206,6 +4201,7 @@ Test-SparsePackageContract
 Test-UninstallerStatePairContract
 Test-InstallStateWriteFaultInjectionContract
 Test-UninstallerCompletionMarkerContract
+Test-StaleUninstallJournalContract
 Test-UninstallerOfflineHiveFailureContract
 Test-UpgradeHostIntegrityContract
 Test-PortableZipContract

@@ -195,7 +195,20 @@ function Set-ProtectedStateAcl
     )
 
     Assert-NoReparsePath -Path $Path
-    $acl = New-Object Security.AccessControl.FileSecurity
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $inheritance = [Security.AccessControl.InheritanceFlags]::None
+    if ($item.PSIsContainer)
+    {
+        $acl = New-Object Security.AccessControl.DirectorySecurity
+        # Replacing a directory DACL also updates inherited rules below it.
+        # Keep administrators able to traverse existing and future children.
+        $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    }
+    else
+    {
+        $acl = New-Object Security.AccessControl.FileSecurity
+    }
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($sidValue in @('S-1-5-18', 'S-1-5-32-544'))
     {
@@ -203,6 +216,8 @@ function Set-ProtectedStateAcl
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $sid,
             'FullControl',
+            $inheritance,
+            [Security.AccessControl.PropagationFlags]::None,
             'Allow')
         $acl.AddAccessRule($rule) | Out-Null
     }
@@ -212,10 +227,12 @@ function Set-ProtectedStateAcl
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $sid,
             'ReadAndExecute',
+            $inheritance,
+            [Security.AccessControl.PropagationFlags]::None,
             'Allow')
         $acl.AddAccessRule($rule) | Out-Null
     }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    $item.SetAccessControl($acl)
     Assert-NoReparsePath -Path $Path
 }
 
@@ -2168,6 +2185,93 @@ function Read-OldInstallState
         -AllowCertificateRepair:$AllowCertificateRepair
 }
 
+function Read-StartedUninstallJournal
+{
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot
+    )
+
+    $path = Join-Path $InstallRoot 'Installer\UNINSTALL-STATE.json'
+    Assert-NoReparsePath -Path $path -AllowMissing
+    if (-not (Test-Path -LiteralPath $path))
+    {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf))
+    {
+        throw 'The uninstall journal is not a file.'
+    }
+    Assert-ProtectedStateAcl -Path $path
+    $journal = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    foreach ($name in @('schema', 'transactionId', 'stateDigest', 'phase'))
+    {
+        if ($null -eq $journal.PSObject.Properties[$name])
+        {
+            throw "Uninstall journal is missing: $name"
+        }
+    }
+    if ([int]$journal.schema -ne 1 -or
+        [string]$journal.transactionId -notmatch '^[0-9a-fA-F]{32}$' -or
+        (-not [string]::IsNullOrWhiteSpace([string]$journal.stateDigest) -and
+            [string]$journal.stateDigest -notmatch '^[0-9A-Fa-f]{64}$'))
+    {
+        throw 'Uninstall journal failed safety validation.'
+    }
+    # The uninstaller publishes user-package-removing BEFORE deleting anything.
+    # Later phases contain recovery evidence that an upgrade must never discard.
+    if ([string]$journal.phase -ne 'started')
+    {
+        throw 'An uninstall has entered resource cleanup. Complete its recovery before installing.'
+    }
+    return $journal
+}
+
+function Move-SupersededUninstallJournal
+{
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UserSid
+    )
+
+    $journal = Read-StartedUninstallJournal -InstallRoot $InstallRoot
+    if ($null -eq $journal)
+    {
+        return
+    }
+    # Re-read the committed pair, Host, signed package and certificate. A valid
+    # new installation supersedes only a journal that never began deletion.
+    $current = Read-OldInstallState -InstallRoot $InstallRoot -UserSid $UserSid
+    if ($null -eq $current -or [int]$current.schema -ne 2)
+    {
+        throw 'A complete schema 2 installation is required to archive an uninstall journal.'
+    }
+    if ([string]$journal.transactionId -eq [string]$current.transactionId)
+    {
+        if ([string]$journal.stateDigest -ne [string]$current.stateDigest)
+        {
+            throw 'The current uninstall journal has a different state digest.'
+        }
+        return
+    }
+    $path = Join-Path $InstallRoot 'Installer\UNINSTALL-STATE.json'
+    $archivePath = Join-Path $InstallRoot ('Installer\UNINSTALL-STATE.' +
+        [string]$journal.transactionId + '.' + [Guid]::NewGuid().ToString('N') + '.stale.json')
+    Assert-NoReparsePath -Path $archivePath -AllowMissing
+    # Rename inside the protected directory, preserving the original ACL and
+    # bytes. An interrupted later cleanup can safely retry with no active log.
+    Move-Item -LiteralPath $path -Destination $archivePath -ErrorAction Stop
+    if (Test-Path -LiteralPath $path)
+    {
+        throw 'The superseded uninstall journal remains after archival.'
+    }
+    Assert-ProtectedStateAcl -Path $archivePath
+    Write-Host "Archived superseded uninstall journal: $archivePath"
+}
+
 function Remove-OldCertificate
 {
     param(
@@ -2587,6 +2691,9 @@ function Complete-CommittedPendingTransaction
         -Path (Join-Path $InstallRoot 'Installer\INSTALL-STATE.json') `
         -Value $cleanedState `
         -ReadSid ([string]$State.userSid)
+    Move-SupersededUninstallJournal `
+        -InstallRoot $InstallRoot `
+        -UserSid ([string]$State.userSid)
     Remove-CompletedRollbackEvidence `
         -InstallRoot $InstallRoot `
         -TransactionId ([string]$State.transactionId)
@@ -3488,6 +3595,11 @@ function Ensure-RollbackEvidenceAcl
         throw 'The rollback evidence parent directory cannot be a reparse point.'
     }
     Assert-RollbackEvidenceAclCanBeHardened -Path $parentPath
+
+    # Older installers removed inherited access from the identity children
+    # when protecting this root. Repair the root before enumerating them.
+    Assert-RollbackEvidenceAclCanBeHardened -Path $RollbackRoot
+    Set-ProtectedStateAcl -Path $RollbackRoot -ReadSid ''
 
     $items = @($rootItem) + @(
         Get-ChildItem -LiteralPath $RollbackRoot -Recurse -Force -ErrorAction Stop)
@@ -5077,6 +5189,14 @@ function Invoke-PendingRollbackCleanup
     }
     if ([int]$State.schema -ge 3)
     {
+        if ($null -ne $State.rollbackIdentity -and
+            ($null -eq $State.PSObject.Properties['rollbackComplete'] -or
+                -not [bool]$State.rollbackComplete))
+        {
+            $evidenceRoot = Join-Path $InstallRoot ('.rollback\' + [string]$State.transactionId)
+            Assert-NoReparsePath -Path $evidenceRoot
+            Ensure-RollbackEvidenceAcl -RollbackRoot $evidenceRoot
+        }
         Complete-RollbackIdentity -State $State -InstallRoot $InstallRoot
         # Publish completion before deleting any recovery material. A crash
         # during cleanup must verify the restored live state, not restore again
@@ -5521,6 +5641,18 @@ if ($Phase -eq 'Prepare')
             -ExpectedReplacementHostSha256 $replacementHostSha256 `
             -ReplacementHostPath (Join-Path $script:PayloadRoot 'ba-click-fx-desktop.exe') `
             -AllowCertificateRepair
+        $script:InstallerStep = 'validate-existing-uninstall-journal'
+        $existingUninstallJournal = Read-StartedUninstallJournal -InstallRoot $installRoot
+        if ($null -ne $existingUninstallJournal -and $null -eq $oldInstallState)
+        {
+            throw 'An uninstall journal exists without a complete installation. Complete its recovery first.'
+        }
+        if ($null -ne $existingUninstallJournal -and
+            [string]$existingUninstallJournal.transactionId -eq [string]$oldInstallState.transactionId -and
+            [string]$existingUninstallJournal.stateDigest -ne [string]$oldInstallState.stateDigest)
+        {
+            throw 'The current uninstall journal has a different state digest.'
+        }
         $metadataPath = Join-Path (Join-Path $script:PayloadRoot 'Identity') `
             "CialloKing.BaClickFxDesktop-$PackageVersion.identity-template.json"
         $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
@@ -5809,6 +5941,11 @@ try
             -Value $cleanedState `
             -ReadSid ([string]$pendingState.userSid)
     }
+
+    $script:InstallerStep = 'archive-superseded-uninstall-journal'
+    Move-SupersededUninstallJournal `
+        -InstallRoot $installRoot `
+        -UserSid ([string]$pendingState.userSid)
 
     # Keep the journal until every cleanup operation and the optional ledger
     # update has completed. A restart can then distinguish a committed state

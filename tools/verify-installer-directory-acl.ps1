@@ -1,0 +1,161 @@
+[CmdletBinding()]
+param([string]$RepositoryRoot)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot))
+{
+    $RepositoryRoot = Join-Path $PSScriptRoot '..'
+}
+$repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+if ($PSVersionTable.PSEdition -ne 'Desktop')
+{
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -RepositoryRoot $repositoryRoot
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "Installer directory ACL verification failed: $LASTEXITCODE"
+    }
+    return
+}
+
+function Assert-Probe
+{
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw $Message }
+}
+
+function Get-ProbeFunction
+{
+    param([string]$File, [string[]]$Names)
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $repositoryRoot $File), [ref]$tokens, [ref]$errors)
+    Assert-Probe ($errors.Count -eq 0) "Production script parse failed: $File"
+    foreach ($name in $Names)
+    {
+        $node = $ast.Find({
+            param($candidate)
+            $candidate -is [Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq $name
+        }, $true)
+        Assert-Probe ($null -ne $node) "Production function not found: $name"
+        $node.Extent.Text
+    }
+}
+
+$functions = @(
+    'Set-StrictMode -Version Latest'
+    Get-ProbeFunction 'tools/installer/protected-paths.ps1' @('Assert-NoReparsePath')
+    Get-ProbeFunction 'tools/installer/install-machine.ps1' @('Set-ProtectedStateAcl')
+) -join "`n"
+$module = New-Module -ScriptBlock ([scriptblock]::Create($functions))
+$temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+$temporaryRoot = Join-Path $temporaryParent ('bafx-directory-acl-' + [Guid]::NewGuid().ToString('N'))
+$savedAcls = New-Object Collections.Generic.List[object]
+try
+{
+    $rollbackRoot = Join-Path $temporaryRoot 'transaction'
+    $identityRoot = Join-Path $rollbackRoot 'identity'
+    $installerRoot = Join-Path $identityRoot 'Installer'
+    New-Item -ItemType Directory -Path $installerRoot -Force | Out-Null
+    $journalPath = Join-Path $installerRoot 'PREPARE-STATE.json'
+    [IO.File]::WriteAllText($journalPath, '{"schema":2}')
+    foreach ($path in @($rollbackRoot, $identityRoot, $installerRoot, $journalPath))
+    {
+        $item = Get-Item -LiteralPath $path -Force
+        $savedAcls.Add([pscustomobject]@{
+            Path = $path; IsDirectory = $item.PSIsContainer; Sddl = $item.GetAccessControl().Sddl
+        })
+    }
+    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+
+    # Reproduce the released installer's DACL: access on the root alone removes
+    # inherited permissions from its existing identity/Installer directories.
+    $legacyAcl = New-Object Security.AccessControl.DirectorySecurity
+    $legacyAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sidValue in @('S-1-5-18', 'S-1-5-32-544'))
+    {
+        $legacyAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sidValue), 'FullControl', 'Allow'))
+    }
+    $legacyAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $userSid, 'ReadAndExecute', 'Allow'))
+    Set-Acl -LiteralPath $rollbackRoot -AclObject $legacyAcl
+    $denied = $false
+    try
+    {
+        Get-ChildItem -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop | Out-Null
+    }
+    catch [UnauthorizedAccessException]
+    {
+        $denied = $true
+    }
+    Assert-Probe $denied 'The legacy fixture did not reproduce inaccessible rollback children.'
+
+    & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $rollbackRoot $userSid.Value
+    $items = @(Get-ChildItem -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop)
+    Assert-Probe ($items.Count -eq 3) 'Directory hardening did not restore traversal to existing children.'
+    Assert-Probe ([IO.File]::ReadAllText($journalPath) -eq '{"schema":2}') 'The rollback journal remained unreadable.'
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $writeRights = [int]([Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership)
+    foreach ($path in @($rollbackRoot, $identityRoot, $installerRoot, $journalPath))
+    {
+        $acl = Get-Acl -LiteralPath $path
+        $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        foreach ($sidValue in @('S-1-5-18', 'S-1-5-32-544'))
+        {
+            $matches = @($rules | Where-Object {
+                $_.IdentityReference.Value -eq $sidValue -and
+                $_.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl
+            })
+            Assert-Probe ($matches.Count -eq 1) "Administrator/SYSTEM access was lost: $path"
+            if ($path -eq $rollbackRoot)
+            {
+                Assert-Probe ($matches[0].InheritanceFlags -eq $inheritance) 'Directory access is not inheritable.'
+            }
+        }
+        $userRules = @($rules | Where-Object { $_.IdentityReference.Value -eq $userSid.Value })
+        Assert-Probe ($userRules.Count -eq 1) "Original-user read access was lost: $path"
+        Assert-Probe (([int]$userRules[0].FileSystemRights -band $writeRights) -eq 0) 'The original user gained write access.'
+    }
+
+    & $module { param($Path, $Sid) Set-ProtectedStateAcl -Path $Path -ReadSid $Sid } $journalPath $userSid.Value
+    $fileAcl = Get-Acl -LiteralPath $journalPath
+    Assert-Probe $fileAcl.AreAccessRulesProtected 'State files must remain individually protected.'
+    foreach ($rule in $fileAcl.Access)
+    {
+        Assert-Probe ($rule.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None) 'File ACLs contain directory inheritance flags.'
+    }
+    Write-Host 'Installer directory ACLs verified on NTFS: legacy failure, restored traversal, inherited administrator access and read-only original-user access.'
+}
+finally
+{
+    # The fixture owner retains WRITE_DAC, allowing cleanup without elevation.
+    # Restore the root first so inherited permissions make its children usable.
+    foreach ($saved in $savedAcls)
+    {
+        if ($saved.IsDirectory)
+        {
+            $restoredAcl = New-Object Security.AccessControl.DirectorySecurity
+            $restoredAcl.SetSecurityDescriptorSddlForm($saved.Sddl, [Security.AccessControl.AccessControlSections]::Access)
+            [IO.Directory]::SetAccessControl($saved.Path, $restoredAcl)
+        }
+        else
+        {
+            $restoredAcl = New-Object Security.AccessControl.FileSecurity
+            $restoredAcl.SetSecurityDescriptorSddlForm($saved.Sddl, [Security.AccessControl.AccessControlSections]::Access)
+            [IO.File]::SetAccessControl($saved.Path, $restoredAcl)
+        }
+    }
+    Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
+    $resolvedRoot = [IO.Path]::GetFullPath($temporaryRoot)
+    if ($resolvedRoot.StartsWith($temporaryParent, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFileName($resolvedRoot).StartsWith('bafx-directory-acl-', [StringComparison]::Ordinal))
+    {
+        Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
