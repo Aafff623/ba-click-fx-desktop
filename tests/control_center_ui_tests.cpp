@@ -149,6 +149,22 @@ LRESULT CALLBACK countRefreshWrites(HWND window, UINT message, WPARAM wParam,
 }
 
 thread_local std::vector<std::wstring> dialogTexts;
+// Makes a shell fully transparent: the window object, its buttons and the
+// posted TDM_CLICK_BUTTON path stay live, but nothing reaches the desktop.
+void makeShellTransparent(const HWND window) noexcept
+{
+    const LONG_PTR extended = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    if ((extended & WS_EX_LAYERED) == 0U)
+    {
+        static_cast<void>(SetWindowLongPtrW(
+            window, GWL_EXSTYLE, extended | WS_EX_LAYERED));
+    }
+    SetLayeredWindowAttributes(window, 0, 0, LWA_ALPHA);
+}
+
+LRESULT CALLBACK dialogKeepHiddenSubclass(
+    HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR) noexcept;
+
 void CALLBACK captureDialog(const HWND dialog, UINT, const UINT_PTR timer, DWORD)
 {
     KillTimer(dialog, timer);
@@ -162,11 +178,53 @@ void CALLBACK captureDialog(const HWND dialog, UINT, const UINT_PTR timer, DWORD
     {
         // Never propagate a C++ exception through a native window callback.
     }
+    RemoveWindowSubclass(dialog, dialogKeepHiddenSubclass, 0xBAF2U);
     PostMessageW(dialog, TDM_CLICK_BUTTON, IDNO, 0);
+}
+
+// The activation sequence shows the dialog again after the HCBT_ACTIVATE
+// callback returns. Cancelling every show attempt here is deterministic: the
+// shell can never paint, while the dialog object, its buttons and the
+// TDM_CLICK_BUTTON path stay fully exercised.
+LRESULT CALLBACK dialogKeepHiddenSubclass(
+    const HWND window,
+    const UINT message,
+    const WPARAM wParam,
+    const LPARAM lParam,
+    const UINT_PTR,
+    const DWORD_PTR) noexcept
+{
+    if (message == WM_SHOWWINDOW && wParam == TRUE)
+    {
+        ShowWindow(window, SW_HIDE);
+        return 0;
+    }
+    return DefSubclassProc(window, message, wParam, lParam);
 }
 
 LRESULT CALLBACK inspectDialog(const int code, const WPARAM window, const LPARAM detail)
 {
+    if (code == HCBT_CREATEWND)
+    {
+        // The dialog template creates the shell visible at the system-clamped
+        // position, so it paints before HCBT_ACTIVATE ever fires. Clear the
+        // visible flag here, while the window is still being created.
+        const HWND created = reinterpret_cast<HWND>(window);
+        wchar_t className[32]{};
+        GetClassNameW(created, className, 32);
+        if (std::wstring_view(className) == L"#32770")
+        {
+            SetWindowPos(created, nullptr, 0, 0, 0, 0,
+                SWP_HIDEWINDOW | SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER
+                    | SWP_NOACTIVATE);
+            // Transparent from creation so neither the template's first show
+            // nor the activation sequence can put pixels on the desktop.
+            makeShellTransparent(created);
+            // Catches any later ShowWindow the activation sequence makes.
+            SetWindowSubclass(created, dialogKeepHiddenSubclass, 0xBAF2U, 0U);
+        }
+        return CallNextHookEx(nullptr, code, window, detail);
+    }
     if (code == HCBT_ACTIVATE)
     {
         const HWND dialog = reinterpret_cast<HWND>(window);
@@ -188,6 +246,7 @@ LRESULT CALLBACK inspectDialog(const int code, const WPARAM window, const LPARAM
         // already captured above, so hide the shell; the dialog object, its
         // buttons and the IDNO result stay fully exercised.
         ShowWindow(dialog, SW_HIDE);
+        makeShellTransparent(dialog);
         // Close only our newly activated confirmation, without accepting it.
         if (SetTimer(dialog, 0xBAF0U, 100U, captureDialog) == 0U)
         {
