@@ -182,6 +182,12 @@ LRESULT CALLBACK inspectDialog(const int code, const WPARAM window, const LPARAM
             dialogTexts.push_back(caption(child));
             return TRUE;
         }, 0);
+        // The system centers the confirmation on its owner and then clamps
+        // the result back into the work area, which would flash it on the
+        // developer's desktop. The texts and the real button-click path are
+        // already captured above, so hide the shell; the dialog object, its
+        // buttons and the IDNO result stay fully exercised.
+        ShowWindow(dialog, SW_HIDE);
         // Close only our newly activated confirmation, without accepting it.
         if (SetTimer(dialog, 0xBAF0U, 100U, captureDialog) == 0U)
         {
@@ -390,9 +396,17 @@ struct ControlCenterUiTest
 
         // Native combo selection painting requires a visible ancestor. Keep
         // the test view off-screen and out of the taskbar while rendering it.
+        // The fixture must suppress the window's own WM_MOVE re-clamping
+        // first: adaptLayoutToMonitor() intentionally drags any off-screen
+        // position back into the work area, which would put a visibly
+        // resizing window on the developer's desktop for the whole DPI
+        // sweep below. The same flag an interactive move/size loop sets
+        // keeps that product behavior out of the fixture.
+        ui.interactiveMoveResize_ = true;
         SetWindowLongPtrW(ui.window_, GWL_EXSTYLE, WS_EX_TOOLWINDOW);
         SetWindowPos(ui.window_, nullptr, -30'000, -30'000, 0, 0,
             SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+        ui.interactiveMoveResize_ = false;
 
         ui.activePage_ = ControlCenterWindow::Page::DisplayPerformance;
         ui.updatePageVisibility();
@@ -450,7 +464,11 @@ struct ControlCenterUiTest
                     ui.activePage_ = static_cast<ControlCenterWindow::Page>(page);
                     ui.updatePageVisibility();
                     ui.layoutControls(ui.scale(860), ui.scale(600));
-                    const int sections = page == 1 ? 6 : 1;
+                    // One entry per AdvancedSection; adding a section
+                    // without updating this count silently drops its
+                    // in-client-area and bitmap coverage.
+                    constexpr int advancedSectionCount = 7;
+                    const int sections = page == 1 ? advancedSectionCount : 1;
                     for (int section = 0; section < sections; ++section)
                     {
                         if (page == 1)
