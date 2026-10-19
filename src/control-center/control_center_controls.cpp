@@ -120,6 +120,50 @@ ControlCenterWindow::sliderDescriptors() noexcept
             {
                 return config.effects.trailOpacity;
             }},
+        // The Glow style owns its parameter namespace; every path rides the
+        // regular patch API (the FX-only API keeps owning effects.* only).
+        {&ControlCenterWindow::glowIntensity_, TextId::GlowIntensity, ControlId::GlowIntensity,
+            0.0, 3.0, 0.05, "glow.intensity", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.intensity;
+            }},
+        {&ControlCenterWindow::glowTrailWidthPx_, TextId::GlowTrailWidthPx, ControlId::GlowTrailWidthPx,
+            0.5, 40.0, 0.5, "glow.trailWidthPx", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.trailWidthPx;
+            }},
+        {&ControlCenterWindow::glowLinger_, TextId::GlowLinger, ControlId::GlowLinger,
+            0.1, 10.0, 0.05, "glow.linger", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.linger;
+            }},
+        {&ControlCenterWindow::glowStrength_, TextId::GlowStrength, ControlId::GlowStrength,
+            0.0, 3.0, 0.05, "glow.glow", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.glow;
+            }},
+        {&ControlCenterWindow::glowHotspot_, TextId::GlowHotspot, ControlId::GlowHotspot,
+            0.0, 3.0, 0.05, "glow.hotspot", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.hotspot;
+            }},
+        {&ControlCenterWindow::glowFollowSpeed_, TextId::GlowFollowSpeed, ControlId::GlowFollowSpeed,
+            0.0, 1.0, 0.05, "glow.followSpeed", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.followSpeed;
+            }},
+        {&ControlCenterWindow::glowGrain_, TextId::GlowGrain, ControlId::GlowGrain,
+            0.0, 1.0, 0.01, "glow.grain", Page::Advanced, AdvancedSection::Glow,
+            [](const bafx::config::Config& config) -> double
+            {
+                return config.glow.grain;
+            }},
         {&ControlCenterWindow::ringsCount_, TextId::RingCount, ControlId::RingsCount,
             0.0, 6.0, 1.0, "effects.ringsCount", Page::Advanced, AdvancedSection::Rings,
             [](const bafx::config::Config& config) -> double
@@ -243,12 +287,26 @@ ControlCenterWindow::pageControlDescriptors() noexcept
         {&ControlCenterWindow::advancedClickShardsSectionButton_, Page::Advanced, std::nullopt, false},
         {&ControlCenterWindow::advancedBloomSectionButton_, Page::Advanced, std::nullopt, false},
         {&ControlCenterWindow::advancedLayersSectionButton_, Page::Advanced, std::nullopt, false},
+        {&ControlCenterWindow::advancedGlowSectionButton_, Page::Advanced, std::nullopt, false},
         {&ControlCenterWindow::advancedTimingHeading_, Page::Advanced, AdvancedSection::Timing, true},
         {&ControlCenterWindow::advancedParticlesHeading_, Page::Advanced, AdvancedSection::Particles, true},
         {&ControlCenterWindow::themeColorLabel_, Page::Advanced, AdvancedSection::Particles, false},
         {&ControlCenterWindow::themeColorEdit_, Page::Advanced, AdvancedSection::Particles, false},
         {&ControlCenterWindow::themeColorPreview_, Page::Advanced, AdvancedSection::Particles, false},
         {&ControlCenterWindow::themeColorChoose_, Page::Advanced, AdvancedSection::Particles, false},
+        {&ControlCenterWindow::advancedGlowHeading_, Page::Advanced, AdvancedSection::Glow, true},
+        {&ControlCenterWindow::glowColorLabel_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowColorEdit_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowColorPreview_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowColorChoose_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowSecondaryColorLabel_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowSecondaryColorEdit_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowSecondaryColorPreview_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowSecondaryColorChoose_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowQualityLabel_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowQuality_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowClickBurst_, Page::Advanced, AdvancedSection::Glow, false},
+        {&ControlCenterWindow::glowResetPreset_, Page::Advanced, AdvancedSection::Glow, false},
         {&ControlCenterWindow::advancedRingsHeading_, Page::Advanced, AdvancedSection::Rings, true},
         {&ControlCenterWindow::advancedClickShardsHeading_, Page::Advanced, AdvancedSection::ClickShards, true},
         {&ControlCenterWindow::advancedBloomHeading_, Page::Advanced, AdvancedSection::Bloom, true},

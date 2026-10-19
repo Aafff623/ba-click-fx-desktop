@@ -11,6 +11,7 @@
 
 #include "product/version.hpp"
 #include "bafx/windows/recording_compatibility.hpp"
+#include "bafx/windows/glow_color.hpp"
 #include "bafx/windows/portable_paths.hpp"
 #include "bafx/windows/spout2_sender.hpp"
 
@@ -262,6 +263,26 @@ struct InstallationStatePresentation final
     return PixelSize{
         (std::max)(1, workAreaWidth - nonClientWidth),
         (std::max)(1, workAreaHeight - nonClientHeight)};
+}
+
+// The cooling color shown in the preview when secondaryColor is empty: the
+// reference derives it from the primary by hue rotation.
+[[nodiscard]] std::string derivedGlowSecondary(const std::string& primary) noexcept
+{
+    const std::array<float, 3> fallback{0.486F, 0.227F, 0.929F};
+    std::array<float, 3> color{};
+    bafx::windows::parseHexColorRgb(primary, fallback, color);
+    const std::array<float, 3> derived =
+        bafx::windows::deriveSecondaryByHueRotation(color);
+    char value[8]{};
+    const int written = std::snprintf(
+        value,
+        sizeof(value),
+        "#%02x%02x%02x",
+        static_cast<unsigned int>(std::lround(derived[0] * 255.0F)),
+        static_cast<unsigned int>(std::lround(derived[1] * 255.0F)),
+        static_cast<unsigned int>(std::lround(derived[2] * 255.0F)));
+    return written == 7 ? std::string{value} : std::string{"#a855f7"};
 }
 
 [[nodiscard]] COLORREF themeColorRef(const std::string_view value) noexcept
@@ -688,12 +709,34 @@ LRESULT ControlCenterWindow::handleMessage(
     case WM_DRAWITEM:
     {
         const auto* drawItem = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-        if (drawItem == nullptr
-            || drawItem->CtlID != static_cast<UINT>(ControlId::ThemeColorPreview))
+        if (drawItem == nullptr)
         {
             return 0;
         }
-        const COLORREF color = themeColorRef(config_.effects.themeColor);
+        std::optional<std::string> previewColor;
+        if (drawItem->CtlID == static_cast<UINT>(ControlId::ThemeColorPreview))
+        {
+            previewColor = config_.effects.themeColor;
+        }
+        else if (drawItem->CtlID == static_cast<UINT>(ControlId::GlowColorPreview))
+        {
+            previewColor = config_.glow.color;
+        }
+        else if (
+            drawItem->CtlID
+            == static_cast<UINT>(ControlId::GlowSecondaryColorPreview))
+        {
+            // An empty secondary derives from the primary; show the derived
+            // color so the preview matches what the renderer uses.
+            previewColor = config_.glow.secondaryColor.empty()
+                ? derivedGlowSecondary(config_.glow.color)
+                : config_.glow.secondaryColor;
+        }
+        else
+        {
+            return 0;
+        }
+        const COLORREF color = themeColorRef(*previewColor);
         HBRUSH brush = CreateSolidBrush(color);
         if (brush != nullptr)
         {
@@ -1061,6 +1104,11 @@ bool ControlCenterWindow::createControls()
         TextId::LayersSection,
         BS_AUTORADIOBUTTON | WS_TABSTOP,
         ControlId::AdvancedLayersSection);
+    advancedGlowSectionButton_ = createChild(
+        L"BUTTON",
+        TextId::GlowSection,
+        BS_AUTORADIOBUTTON | WS_TABSTOP,
+        ControlId::AdvancedGlowSection);
     effectsHeading_ = createChild(
         L"BUTTON",
         TextId::EffectsHeading,
@@ -1155,6 +1203,92 @@ bool ControlCenterWindow::createControls()
             reinterpret_cast<LONG_PTR>(themeColorEditProcedure)));
         static_cast<void>(SetPropW(
             themeColorEdit_,
+            themeColorEditOriginalProcedureProperty,
+            reinterpret_cast<HANDLE>(original)));
+    }
+
+    advancedGlowHeading_ = createChild(
+        L"BUTTON",
+        TextId::GlowHeading,
+        BS_GROUPBOX);
+    glowColorLabel_ = createChild(
+        L"STATIC",
+        TextId::GlowColor,
+        SS_LEFT | SS_CENTERIMAGE | SS_NOPREFIX);
+    glowColorEdit_ = createChild(
+        L"EDIT",
+        L"#7c3aed",
+        ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP,
+        ControlId::GlowColorEdit);
+    glowColorPreview_ = createChild(
+        L"STATIC",
+        L"",
+        SS_OWNERDRAW | WS_TABSTOP,
+        ControlId::GlowColorPreview);
+    glowColorChoose_ = createChild(
+        L"BUTTON",
+        TextId::ChooseGlowColor,
+        BS_PUSHBUTTON | WS_TABSTOP,
+        ControlId::GlowColorChoose);
+    glowSecondaryColorLabel_ = createChild(
+        L"STATIC",
+        TextId::GlowSecondaryColor,
+        SS_LEFT | SS_CENTERIMAGE | SS_NOPREFIX);
+    glowSecondaryColorEdit_ = createChild(
+        L"EDIT",
+        L"#a855f7",
+        ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP,
+        ControlId::GlowSecondaryColorEdit);
+    glowSecondaryColorPreview_ = createChild(
+        L"STATIC",
+        L"",
+        SS_OWNERDRAW | WS_TABSTOP,
+        ControlId::GlowSecondaryColorPreview);
+    glowSecondaryColorChoose_ = createChild(
+        L"BUTTON",
+        TextId::ChooseGlowColor,
+        BS_PUSHBUTTON | WS_TABSTOP,
+        ControlId::GlowSecondaryColorChoose);
+    glowQualityLabel_ = createChild(
+        L"STATIC",
+        TextId::GlowQuality,
+        SS_LEFT | SS_NOPREFIX);
+    glowQuality_ = createChild(
+        WC_COMBOBOXW,
+        L"",
+        CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP,
+        ControlId::GlowQuality);
+    if (glowQuality_ != nullptr)
+    {
+        static_cast<void>(SendMessageW(glowQuality_, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(tr(TextId::GlowQualityLow))));
+        static_cast<void>(SendMessageW(glowQuality_, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(tr(TextId::GlowQualityMedium))));
+        static_cast<void>(SendMessageW(glowQuality_, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(tr(TextId::GlowQualityHigh))));
+        static_cast<void>(SendMessageW(glowQuality_, CB_SETMINVISIBLE, 3U, 0));
+    }
+    glowClickBurst_ = createChild(
+        L"BUTTON",
+        TextId::GlowClickBurst,
+        BS_AUTOCHECKBOX | WS_TABSTOP,
+        ControlId::GlowClickBurst);
+    glowResetPreset_ = createChild(
+        L"BUTTON",
+        TextId::GlowResetPreset,
+        BS_PUSHBUTTON | WS_TABSTOP,
+        ControlId::GlowResetPreset);
+    for (HWND glowColorEditor : {glowColorEdit_, glowSecondaryColorEdit_})
+    {
+        if (glowColorEditor == nullptr)
+        {
+            continue;
+        }
+        // The theme edit subclass forwards Return as a commit notification;
+        // the Glow edits reuse it and dispatch by their own control id.
+        const WNDPROC original = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+            glowColorEditor,
+            GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(themeColorEditProcedure)));
+        static_cast<void>(SetPropW(
+            glowColorEditor,
             themeColorEditOriginalProcedureProperty,
             reinterpret_cast<HANDLE>(original)));
     }
@@ -1927,6 +2061,12 @@ void ControlCenterWindow::onCommand(
             selectAdvancedSection(AdvancedSection::Layers);
         }
         break;
+    case ControlId::AdvancedGlowSection:
+        if (notificationCode == BN_CLICKED)
+        {
+            selectAdvancedSection(AdvancedSection::Glow);
+        }
+        break;
     case ControlId::Pause:
         if (notificationCode == BN_CLICKED)
         {
@@ -2454,6 +2594,75 @@ void ControlCenterWindow::onCommand(
             chooseThemeColor();
         }
         break;
+    case ControlId::GlowColorEdit:
+        if (notificationCode == EN_CHANGE)
+        {
+            glowColorDraftDirty_ = true;
+        }
+        if (notificationCode == EN_KILLFOCUS
+            || notificationCode == themeColorReturnNotification)
+        {
+            commitGlowColor(false);
+        }
+        break;
+    case ControlId::GlowSecondaryColorEdit:
+        if (notificationCode == EN_CHANGE)
+        {
+            glowSecondaryColorDraftDirty_ = true;
+        }
+        if (notificationCode == EN_KILLFOCUS
+            || notificationCode == themeColorReturnNotification)
+        {
+            commitGlowColor(true);
+        }
+        break;
+    case ControlId::GlowColorChoose:
+        if (notificationCode == BN_CLICKED)
+        {
+            chooseGlowColor(false);
+        }
+        break;
+    case ControlId::GlowSecondaryColorChoose:
+        if (notificationCode == BN_CLICKED)
+        {
+            chooseGlowColor(true);
+        }
+        break;
+    case ControlId::GlowQuality:
+        if (notificationCode == CBN_SELCHANGE)
+        {
+            // The Host reallocates the simulation targets on the next frame;
+            // the application keeps running through the switch.
+            switch (SendMessageW(glowQuality_, CB_GETCURSEL, 0U, 0))
+            {
+            case 0:
+                applyPatch("glow.quality", "\"low\"");
+                break;
+            case 1:
+                applyPatch("glow.quality", "\"medium\"");
+                break;
+            case 2:
+                applyPatch("glow.quality", "\"high\"");
+                break;
+            default:
+                break;
+            }
+        }
+        break;
+    case ControlId::GlowClickBurst:
+        if (notificationCode == BN_CLICKED)
+        {
+            applyPatch(
+                "glow.clickBurst",
+                isChecked(glowClickBurst_) ? "true" : "false");
+        }
+        break;
+    case ControlId::GlowResetPreset:
+        if (notificationCode == BN_CLICKED)
+        {
+            resetGlowPreset();
+        }
+        break;
     }
 }
 
@@ -2554,6 +2763,134 @@ void ControlCenterWindow::chooseThemeColor()
     }
     setText(themeColorEdit_, utf8ToWide(value).c_str());
     commitThemeColor();
+}
+
+void ControlCenterWindow::commitGlowColor(const bool secondary)
+{
+    if (updatingControls_)
+    {
+        return;
+    }
+    HWND edit = secondary ? glowSecondaryColorEdit_ : glowColorEdit_;
+    bool& dirty = secondary ? glowSecondaryColorDraftDirty_ : glowColorDraftDirty_;
+    const char* path = secondary ? "glow.secondaryColor" : "glow.color";
+    if (edit == nullptr)
+    {
+        return;
+    }
+    if (!connected_)
+    {
+        dirty = false;
+        setText(
+            edit,
+            utf8ToWide(
+                secondary ? config_.glow.secondaryColor : config_.glow.color)
+                .c_str());
+        setInfo(TextId::HostDisconnected, TextId::StartHostForColor);
+        return;
+    }
+
+    const int length = GetWindowTextLengthW(edit);
+    if (length < 0)
+    {
+        return;
+    }
+    std::wstring text(static_cast<std::size_t>(length) + 1U, L'\0');
+    const int copied = GetWindowTextW(
+        edit,
+        text.data(),
+        static_cast<int>(text.size()));
+    if (copied < 0)
+    {
+        return;
+    }
+    text.resize(static_cast<std::size_t>(copied));
+    const std::string value = wideToUtf8(text);
+    const std::string valueJson = std::string("\"") + value + "\"";
+    if (!commitPendingPatch())
+    {
+        return;
+    }
+    dirty = false;
+    applyPatchRequest(
+        patchRequest(
+            generation_,
+            path,
+            valueJson));
+}
+
+void ControlCenterWindow::chooseGlowColor(const bool secondary)
+{
+    if (!connected_)
+    {
+        setInfo(TextId::HostDisconnected, TextId::StartHostForColor);
+        return;
+    }
+
+    static COLORREF customColors[16]{};
+    CHOOSECOLORW chooser{};
+    chooser.lStructSize = sizeof(chooser);
+    chooser.hwndOwner = window_;
+    chooser.rgbResult = themeColorRef(
+        secondary ? config_.glow.secondaryColor : config_.glow.color);
+    chooser.lpCustColors = customColors;
+    chooser.Flags = CC_FULLOPEN | CC_RGBINIT;
+    if (ChooseColorW(&chooser) == FALSE)
+    {
+        return;
+    }
+
+    char value[8]{};
+    const int written = std::snprintf(
+        value,
+        sizeof(value),
+        "#%02x%02x%02x",
+        static_cast<unsigned int>(GetRValue(chooser.rgbResult)),
+        static_cast<unsigned int>(GetGValue(chooser.rgbResult)),
+        static_cast<unsigned int>(GetBValue(chooser.rgbResult)));
+    if (written != 7)
+    {
+        return;
+    }
+    HWND edit = secondary ? glowSecondaryColorEdit_ : glowColorEdit_;
+    if (edit != nullptr)
+    {
+        setText(edit, utf8ToWide(value).c_str());
+    }
+    commitGlowColor(secondary);
+}
+
+void ControlCenterWindow::resetGlowPreset()
+{
+    if (!connected_)
+    {
+        setInfo(TextId::HostDisconnected, TextId::StartHostForColor);
+        return;
+    }
+    // The IPC patch API is single-path, so the ember preset is restored
+    // field by field. The BA settings and the saved FX profiles are never
+    // touched: Glow owns its own configuration namespace.
+    static constexpr std::pair<std::string_view, std::string_view> preset[]{
+        {"glow.enabled", "true"},
+        {"glow.color", "\"#7c3aed\""},
+        {"glow.secondaryColor", "\"#a855f7\""},
+        {"glow.intensity", "0.3"},
+        {"glow.trailWidthPx", "3"},
+        {"glow.linger", "0.3"},
+        {"glow.glow", "0.5"},
+        {"glow.hotspot", "0"},
+        {"glow.followSpeed", "1"},
+        {"glow.grain", "0.15"},
+        {"glow.clickBurst", "true"},
+        {"glow.quality", "\"high\""}};
+    for (const auto& field : preset)
+    {
+        if (!applyPatch(field.first, field.second))
+        {
+            return;
+        }
+    }
+    setInfo(TextId::GlowPresetRestored, TextId::GlowPresetRestored);
 }
 
 void ControlCenterWindow::queueNumberPatch(const SliderControl& slider)
@@ -3220,6 +3557,24 @@ void ControlCenterWindow::updateControls(
     setComboSelection(bloomQuality_, qualityIndex(bafx::config::bloomQualityForDiffusion(
             config.effects.bloomDiffusion)));
     setComboSelection(effectStyle_, effectStyleIndex(config.effectStyle));
+    if (!glowColorDraftDirty_)
+    {
+        setText(glowColorEdit_, utf8ToWide(config.glow.color).c_str());
+    }
+    if (!glowSecondaryColorDraftDirty_)
+    {
+        setText(
+            glowSecondaryColorEdit_,
+            utf8ToWide(config.glow.secondaryColor).c_str());
+    }
+    setComboSelection(
+        glowQuality_,
+        config.glow.quality == bafx::config::GlowQuality::Low
+            ? 0
+            : config.glow.quality == bafx::config::GlowQuality::Medium
+            ? 1
+            : 2);
+    setChecked(glowClickBurst_, config.glow.clickBurst);
     setComboSelection(backgroundMode_, renderModeIndex(config.background.mode));
     setChecked(cursorExcluded_, config.background.cursorExcluded);
     setChecked(

@@ -216,3 +216,63 @@ BAFX_TEST(glow_patch_paths_use_style_namespace)
         R"({"effectStyle":"glowFluid","glow.linger":"wide"})");
     BAFX_CHECK(!badBatch.succeeded());
 }
+
+BAFX_TEST(glow_settings_survive_style_switch_and_fx_profile_load)
+{
+    Config config = defaultConfig();
+    config.effectStyle = EffectStyle::GlowFluid;
+    config.glow.color = "#123456";
+    config.glow.intensity = 1.1F;
+    config.glow.quality = GlowQuality::Low;
+    const Config glowBaseline = config;
+
+    // Switching the style axis must not rewrite the Glow namespace.
+    const auto toBa = applyPatchJson(
+        config, R"({"path":"effectStyle","value":"ba"})");
+    bafx::test::check(toBa.succeeded(), toBa.message);
+    BAFX_CHECK(toBa.config.effectStyle == EffectStyle::BA);
+    BAFX_CHECK(toBa.config.glow.color == "#123456");
+    BAFX_CHECK_NEAR(toBa.config.glow.intensity, 1.1F, 0.00001F);
+    BAFX_CHECK(toBa.config.glow.quality == GlowQuality::Low);
+
+    const auto backToGlow = applyPatchJson(
+        toBa.config, R"({"path":"effectStyle","value":"glowFluid"})");
+    bafx::test::check(backToGlow.succeeded(), backToGlow.message);
+    BAFX_CHECK(backToGlow.config.effectStyle == EffectStyle::GlowFluid);
+    BAFX_CHECK(backToGlow.config.glow.color == glowBaseline.glow.color);
+    BAFX_CHECK_NEAR(
+        backToGlow.config.glow.intensity,
+        glowBaseline.glow.intensity,
+        0.00001F);
+
+    // An effects-only FX profile document carries no style axis: applying it
+    // to a Glow config keeps the style and the Glow parameters intact.
+    const auto fxOnly = applyFxPatchJson(
+        config, R"({"path":"effects.trailWidth","value":2.5})");
+    bafx::test::check(fxOnly.succeeded(), fxOnly.message);
+    BAFX_CHECK(fxOnly.config.effectStyle == EffectStyle::GlowFluid);
+    BAFX_CHECK_NEAR(fxOnly.config.effects.trailWidth, 2.5F, 0.00001F);
+    BAFX_CHECK(fxOnly.config.glow.color == glowBaseline.glow.color);
+    BAFX_CHECK_NEAR(
+        fxOnly.config.glow.intensity,
+        glowBaseline.glow.intensity,
+        0.00001F);
+
+    // The reference ember preset stays reproducible field by field, which is
+    // what the Control Center reset button applies over the IPC.
+    const auto preset = applyPatchBatchJson(
+        defaultConfig(),
+        R"({"glow.color":"#7c3aed",
+            "glow.secondaryColor":"#a855f7",
+            "glow.intensity":0.3,
+            "glow.trailWidthPx":3,
+            "glow.linger":0.3,
+            "glow.glow":0.5,
+            "glow.hotspot":0,
+            "glow.followSpeed":1,
+            "glow.grain":0.15,
+            "glow.clickBurst":true,
+            "glow.quality":"high"})");
+    bafx::test::check(preset.succeeded(), preset.message);
+    checkReferenceDefaults(preset.config.glow);
+}

@@ -119,6 +119,23 @@ private:
         ThemeColorPreview,
         ThemeColorChoose,
         EffectStyle,
+        AdvancedGlowSection,
+        GlowIntensity,
+        GlowTrailWidthPx,
+        GlowLinger,
+        GlowStrength,
+        GlowHotspot,
+        GlowFollowSpeed,
+        GlowGrain,
+        GlowColorEdit,
+        GlowColorPreview,
+        GlowColorChoose,
+        GlowSecondaryColorEdit,
+        GlowSecondaryColorPreview,
+        GlowSecondaryColorChoose,
+        GlowQuality,
+        GlowClickBurst,
+        GlowResetPreset,
         BackgroundMode,
         CursorExcluded,
         AllowSystemBorder,
@@ -197,7 +214,8 @@ private:
         Rings,
         ClickShards,
         Bloom,
-        Layers
+        Layers,
+        Glow
     };
 
     struct SliderDescriptor final
@@ -302,6 +320,9 @@ private:
     void onSliderChanged(HWND trackbar);
     void commitThemeColor();
     void chooseThemeColor();
+    void commitGlowColor(bool secondary);
+    void chooseGlowColor(bool secondary);
+    void resetGlowPreset();
     void queueNumberPatch(const SliderControl& slider);
     bool commitPendingPatch();
     bool readyForFxProfileMutation();
@@ -481,10 +502,31 @@ private:
     SliderControl shardsSizeMin_{};
     SliderControl shardsSizeMax_{};
     SliderControl trailOpacity_{};
+    SliderControl glowIntensity_{};
+    SliderControl glowTrailWidthPx_{};
+    SliderControl glowLinger_{};
+    SliderControl glowStrength_{};
+    SliderControl glowHotspot_{};
+    SliderControl glowFollowSpeed_{};
+    SliderControl glowGrain_{};
     HWND themeColorLabel_{nullptr};
     HWND themeColorEdit_{nullptr};
     HWND themeColorPreview_{nullptr};
     HWND themeColorChoose_{nullptr};
+    HWND advancedGlowSectionButton_{nullptr};
+    HWND advancedGlowHeading_{nullptr};
+    HWND glowColorLabel_{nullptr};
+    HWND glowColorEdit_{nullptr};
+    HWND glowColorPreview_{nullptr};
+    HWND glowColorChoose_{nullptr};
+    HWND glowSecondaryColorLabel_{nullptr};
+    HWND glowSecondaryColorEdit_{nullptr};
+    HWND glowSecondaryColorPreview_{nullptr};
+    HWND glowSecondaryColorChoose_{nullptr};
+    HWND glowQualityLabel_{nullptr};
+    HWND glowQuality_{nullptr};
+    HWND glowClickBurst_{nullptr};
+    HWND glowResetPreset_{nullptr};
     HWND basicPageButton_{nullptr};
     HWND advancedPageButton_{nullptr};
     HWND displayPageButton_{nullptr};
@@ -629,6 +671,8 @@ private:
     bool updatingControls_{false};
     bool controlsInitialized_{false};
     bool themeColorDraftDirty_{false};
+    bool glowColorDraftDirty_{false};
+    bool glowSecondaryColorDraftDirty_{false};
     bool interactiveMoveResize_{false};
     bool trayIconAdded_{false};
     Page activePage_{Page::Basic};

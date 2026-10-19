@@ -207,6 +207,7 @@ void ControlCenterWindow::applyDpiMetrics() const noexcept
         bloomQuality_,
         effectsMode_,
         effectStyle_,
+        glowQuality_,
         backgroundMode_,
         fxProfileSelector_,
         displaySelector_,
@@ -686,7 +687,7 @@ void ControlCenterWindow::layoutControls(
     if (activePage_ == Page::Advanced)
     {
         const int sectionButtonGap = scale(8);
-        constexpr int sectionButtonCount = 6;
+        constexpr int sectionButtonCount = 7;
         const int sectionButtonWidth = (std::max)(
             scale(1),
             (clientWidth - margin * 2
@@ -725,6 +726,12 @@ void ControlCenterWindow::layoutControls(
         moveControl(
             advancedLayersSectionButton_,
             margin + (sectionButtonWidth + sectionButtonGap) * 5,
+            contentTop,
+            sectionButtonWidth,
+            scale(30));
+        moveControl(
+            advancedGlowSectionButton_,
+            margin + (sectionButtonWidth + sectionButtonGap) * 6,
             contentTop,
             sectionButtonWidth,
             scale(30));
@@ -1015,6 +1022,115 @@ void ControlCenterWindow::layoutControls(
                 nextRowTop,
                 layerColumnWidth,
                 scale(40));
+            break;
+        }
+        case AdvancedSection::Glow:
+        {
+            moveControl(
+                advancedGlowHeading_,
+                margin,
+                panelTop,
+                groupWidth,
+                groupHeight);
+            // Seven sliders fill the left column and three of four right
+            // rows; the color, quality and reset rows follow. Everything
+            // stays inside the shared panel height budget.
+            layoutSlider(glowIntensity_, left, rowTop, columnWidth, scale(40));
+            layoutSlider(
+                glowTrailWidthPx_,
+                left,
+                nextRowTop,
+                columnWidth,
+                scale(40));
+            layoutSlider(
+                glowLinger_,
+                left,
+                thirdRowTop,
+                columnWidth,
+                scale(40));
+            layoutSlider(
+                glowStrength_,
+                left,
+                fourthRowTop,
+                columnWidth,
+                scale(40));
+            layoutSlider(glowHotspot_, right, rowTop, columnWidth, scale(40));
+            layoutSlider(
+                glowFollowSpeed_,
+                right,
+                nextRowTop,
+                columnWidth,
+                scale(40));
+            layoutSlider(glowGrain_, right, thirdRowTop, columnWidth, scale(40));
+
+            const int fifthRowTop = fourthRowTop + scale(50);
+            const int colorLabelWidth = scale(72);
+            const int colorEditWidth = scale(96);
+            const int colorPreviewWidth = scale(40);
+            const int colorChooseWidth = scale(88);
+            const auto layoutColorRow =
+                [&](HWND label,
+                    HWND edit,
+                    HWND preview,
+                    HWND choose,
+                    const int rowLeft,
+                    const int top)
+            {
+                moveControl(label, rowLeft, top, colorLabelWidth, scale(40));
+                moveControl(
+                    edit,
+                    rowLeft + colorLabelWidth + scale(6),
+                    top,
+                    colorEditWidth,
+                    scale(40));
+                moveControl(
+                    preview,
+                    rowLeft + colorLabelWidth + colorEditWidth + scale(12),
+                    top,
+                    colorPreviewWidth,
+                    scale(40));
+                moveControl(
+                    choose,
+                    rowLeft + colorLabelWidth + colorEditWidth
+                        + colorPreviewWidth + scale(18),
+                    top,
+                    colorChooseWidth,
+                    scale(40));
+            };
+            layoutColorRow(
+                glowColorLabel_,
+                glowColorEdit_,
+                glowColorPreview_,
+                glowColorChoose_,
+                right,
+                fourthRowTop);
+            layoutColorRow(
+                glowSecondaryColorLabel_,
+                glowSecondaryColorEdit_,
+                glowSecondaryColorPreview_,
+                glowSecondaryColorChoose_,
+                left,
+                fifthRowTop);
+
+            const int switchTop = fifthRowTop;
+            moveControl(
+                glowQualityLabel_,
+                right,
+                switchTop,
+                scale(72),
+                scale(40));
+            moveControl(
+                glowQuality_,
+                right + scale(78),
+                switchTop,
+                columnWidth - scale(78),
+                scale(40));
+            moveControl(
+                glowResetPreset_,
+                left,
+                fifthRowTop + scale(50),
+                columnWidth,
+                scale(38));
             break;
         }
         }
