@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 namespace bafx::windows
@@ -17,6 +18,9 @@ struct GlowTrailSample final
     float x{0.0F};
     float y{0.0F};
     double atSeconds{0.0};
+    // Monotonic id assigned on insert. The fluid renderer consumes samples
+    // by id so expired (erased) samples never shift a frame's cursor.
+    std::uint64_t sequence{0U};
 };
 
 class GlowTrailState final
@@ -48,6 +52,7 @@ public:
 
 private:
     std::vector<GlowTrailSample> samples_{};
+    std::uint64_t nextSequence_{1U};
     float linger_{0.3F};
     float radius_{3.0F};
     bool pendingTransparentFrame_{false};

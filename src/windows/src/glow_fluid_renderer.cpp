@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,19 @@ namespace
 
 constexpr std::size_t verticesPerSample = 6U;
 constexpr std::size_t maximumSamples = 1024U;
+
+// Reference emit() constants: velocity splats blend toward the measured
+// pointer velocity, dye splats inject energy/heat/gas additively.
+constexpr float kFlowStrength = 0.45F; // FLOW * 0.6
+constexpr float kDyeEnergy = 5.6F;
+constexpr float kDyeHeat = 5.6F;
+constexpr float kDyeGas = 0.7F;
+constexpr float kVelocityRadiusScale = 4.0F;
+constexpr float kVelocityRadiusOffset = 18.0F;
+constexpr float kDyeWideScale = 5.0F;
+constexpr float kDyeWideOffset = 6.0F;
+constexpr float kMinimumFrameDelta = 1.0F / 240.0F;
+constexpr float kMaximumFrameDelta = 1.0F / 30.0F;
 
 constexpr char kVertexShaderSource[] = R"hlsl(
 cbuffer Transform : register(b0)
@@ -127,6 +141,20 @@ GlowFluidRenderer::GlowFluidRenderer(
         throw std::invalid_argument("GlowFluidRenderer requires a device and context");
     }
     resourcesFailed_ = !createResources();
+    if (!resourcesFailed_)
+    {
+        // The fluid pipeline rides the same device and resource domain. A
+        // creation failure is not fatal: the additive-quad placeholder below
+        // stays available as the degraded visual path.
+        try
+        {
+            pipeline_ = std::make_unique<GlowFluidPipeline>(device, context);
+        }
+        catch (const std::exception&)
+        {
+            pipeline_.reset();
+        }
+    }
 }
 
 void GlowFluidRenderer::setSettings(const GlowRenderSettings& settings) noexcept
@@ -134,6 +162,22 @@ void GlowFluidRenderer::setSettings(const GlowRenderSettings& settings) noexcept
     settings_ = settings;
     trail_.setLinger(settings.linger);
     trail_.setRadius(settings.radiusPx);
+    if (pipeline_ != nullptr)
+    {
+        pipeline_->setQuality(settings.quality);
+        pipeline_->setLinger(settings.linger);
+        pipeline_->setAppearance(GlowFluidAppearance{
+            settings.colorR,
+            settings.colorG,
+            settings.colorB,
+            settings.secondaryR,
+            settings.secondaryG,
+            settings.secondaryB,
+            settings.intensity,
+            settings.glow,
+            settings.grain,
+            settings.hotspot});
+    }
 }
 
 void GlowFluidRenderer::setViewportSize(
@@ -142,6 +186,10 @@ void GlowFluidRenderer::setViewportSize(
 {
     viewportWidth_ = std::max(widthPx, 1.0F);
     viewportHeight_ = std::max(heightPx, 1.0F);
+    if (pipeline_ != nullptr)
+    {
+        pipeline_->setViewportSize(viewportWidth_, viewportHeight_);
+    }
 }
 
 void GlowFluidRenderer::submitPointerSample(
@@ -283,6 +331,128 @@ void GlowFluidRenderer::render(
     {
         return;
     }
+    if (pipeline_ != nullptr && pipeline_->healthy())
+    {
+        renderFluid(destination, nowSeconds);
+        return;
+    }
+    renderPlaceholder(destination, nowSeconds);
+}
+
+void GlowFluidRenderer::renderFluid(
+    ID3D11RenderTargetView* destination,
+    const double nowSeconds)
+{
+    trail_.advance(nowSeconds);
+    if (trail_.samples().empty())
+    {
+        if (trail_.pendingTransparentFrame())
+        {
+            // Present exactly one transparent frame so the overlay does not
+            // keep the faded glow on screen after idle.
+            const std::array<float, 4> transparent{0.0F, 0.0F, 0.0F, 0.0F};
+            context_->ClearRenderTargetView(destination, transparent.data());
+            trail_.clearPendingTransparentFrame();
+        }
+        // The trail is gone and the dye has faded with it: drop the field so
+        // the next pointer entry starts from a clean simulation.
+        pipeline_->clearSimulation();
+        lastFrameSeconds_ = 0.0;
+        return;
+    }
+
+    float deltaSeconds = 1.0F / 60.0F;
+    if (lastFrameSeconds_ > 0.0)
+    {
+        deltaSeconds = std::clamp(
+            static_cast<float>(nowSeconds - lastFrameSeconds_),
+            kMinimumFrameDelta,
+            kMaximumFrameDelta);
+    }
+    lastFrameSeconds_ = nowSeconds;
+
+    injectPendingSamples(deltaSeconds);
+    pipeline_->step(deltaSeconds);
+    pipeline_->display(destination);
+}
+
+void GlowFluidRenderer::injectPendingSamples(const float deltaSeconds)
+{
+    const std::vector<GlowTrailSample>& samples = trail_.samples();
+    const GlowTrailSample* newest = nullptr;
+    for (const GlowTrailSample& sample : samples)
+    {
+        if (sample.sequence > consumedSequence_)
+        {
+            newest = &sample;
+        }
+    }
+    if (newest == nullptr)
+    {
+        return;
+    }
+    consumedSequence_ = newest->sequence;
+
+    float fromX = newest->x;
+    float fromY = newest->y;
+    if (hasEmittedPosition_)
+    {
+        fromX = emittedX_;
+        fromY = emittedY_;
+    }
+    emittedX_ = newest->x;
+    emittedY_ = newest->y;
+    hasEmittedPosition_ = true;
+
+    // Reference lightRadius: never thinner than half the trail width, and at
+    // least ~0.9 dye texels so the splat survives downsampling.
+    const float dyeHeight = static_cast<float>(pipeline_->dyeHeight());
+    const float radius = std::max(
+        settings_.radiusPx * 0.5F,
+        dyeHeight > 0.0F ? (viewportHeight_ / dyeHeight) * 0.9F : 1.0F);
+    const float wideRadius = radius * kDyeWideScale + kDyeWideOffset;
+    const float velocityRadius =
+        radius * kVelocityRadiusScale + kVelocityRadiusOffset;
+
+    const bool moving = std::hypot(newest->x - fromX, newest->y - fromY) > 0.05F;
+    const GlowSplatMode velocityMode =
+        moving ? GlowSplatMode::SegmentMix : GlowSplatMode::PointMix;
+    const GlowSplatMode dyeMode =
+        moving ? GlowSplatMode::SegmentAdditive : GlowSplatMode::PointAdditive;
+
+    if (moving)
+    {
+        // Pointer velocity in screen pixels per second; the pipeline converts
+        // it to simulation grid units.
+        pipeline_->splatVelocity(
+            fromX,
+            fromY,
+            newest->x,
+            newest->y,
+            velocityRadius,
+            GlowSplatValue{
+                (newest->x - fromX) / deltaSeconds,
+                (newest->y - fromY) / deltaSeconds,
+                0.0F},
+            velocityMode,
+            kFlowStrength);
+    }
+    pipeline_->splatDye(
+        fromX,
+        fromY,
+        newest->x,
+        newest->y,
+        radius,
+        wideRadius,
+        GlowSplatValue{kDyeEnergy, kDyeHeat, kDyeGas},
+        dyeMode,
+        1.0F);
+}
+
+void GlowFluidRenderer::renderPlaceholder(
+    ID3D11RenderTargetView* destination,
+    const double nowSeconds)
+{
 
     trail_.advance(nowSeconds);
     const bool pendingTransparent = trail_.pendingTransparentFrame();
@@ -396,6 +566,15 @@ bool GlowFluidRenderer::needsFrame() const noexcept
 void GlowFluidRenderer::reset() noexcept
 {
     trail_.reset();
+    if (pipeline_ != nullptr)
+    {
+        pipeline_->reset();
+    }
+    lastFrameSeconds_ = 0.0;
+    consumedSequence_ = 0U;
+    hasEmittedPosition_ = false;
+    emittedX_ = 0.0F;
+    emittedY_ = 0.0F;
 }
 
 }

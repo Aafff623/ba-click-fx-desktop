@@ -41,7 +41,8 @@ void GlowTrailState::addSample(
         // buffer and the GPU vertex budget stay bounded.
         samples_.erase(samples_.begin());
     }
-    samples_.push_back(GlowTrailSample{x, y, nowSeconds});
+    samples_.push_back(
+        GlowTrailSample{x, y, nowSeconds, nextSequence_++});
 }
 
 void GlowTrailState::advance(const double nowSeconds) noexcept

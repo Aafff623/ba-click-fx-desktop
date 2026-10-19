@@ -725,6 +725,52 @@ if(WIN32)
     )
 
     add_executable(
+        bafx_glow_fluid_shader_tests
+        test_main.cpp
+        glow_fluid_shader_tests.cpp
+    )
+    target_include_directories(
+        bafx_glow_fluid_shader_tests
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/src/windows/src"
+    )
+    target_link_libraries(bafx_glow_fluid_shader_tests PRIVATE d3dcompiler)
+    target_compile_features(bafx_glow_fluid_shader_tests PRIVATE cxx_std_20)
+    bafx_enable_warnings(bafx_glow_fluid_shader_tests)
+    add_test(NAME glow_fluid_shader_contract COMMAND bafx_glow_fluid_shader_tests)
+    set_target_properties(bafx_glow_fluid_shader_tests PROPERTIES FOLDER "Tests")
+
+    # The Glow fluid HLSL port is build-gated like the authored FX shaders.
+    add_custom_target(
+        verify_glow_fluid_shaders ALL
+        COMMAND $<TARGET_FILE:bafx_glow_fluid_shader_tests>
+        DEPENDS bafx_glow_fluid_shader_tests
+        COMMENT "Compile and reflect all Glow fluid shaders"
+        VERBATIM
+    )
+    set_target_properties(
+        verify_glow_fluid_shaders
+        PROPERTIES
+            FOLDER "Validation"
+    )
+
+    add_executable(
+        bafx_glow_fluid_pipeline_tests
+        test_main.cpp
+        glow_fluid_pipeline_tests.cpp
+    )
+    target_include_directories(
+        bafx_glow_fluid_pipeline_tests
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/src/windows/src"
+    )
+    target_link_libraries(bafx_glow_fluid_pipeline_tests PRIVATE bafx::windows)
+    target_compile_features(bafx_glow_fluid_pipeline_tests PRIVATE cxx_std_20)
+    bafx_enable_warnings(bafx_glow_fluid_pipeline_tests)
+    add_test(NAME glow_fluid_pipeline COMMAND bafx_glow_fluid_pipeline_tests)
+    set_target_properties(bafx_glow_fluid_pipeline_tests PROPERTIES FOLDER "Tests")
+
+    add_executable(
         bafx_gpu_pipeline_tests
         test_main.cpp
         fx_gpu_pipeline_tests.cpp
