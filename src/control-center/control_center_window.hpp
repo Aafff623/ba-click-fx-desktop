@@ -118,6 +118,7 @@ private:
         ThemeColorEdit,
         ThemeColorPreview,
         ThemeColorChoose,
+        EffectStyle,
         BackgroundMode,
         CursorExcluded,
         AllowSystemBorder,
@@ -530,6 +531,8 @@ private:
     HWND bloomQualityLabel_{nullptr};
     HWND bloomQuality_{nullptr};
     HWND backgroundHeading_{nullptr};
+    HWND effectStyleLabel_{nullptr};
+    HWND effectStyle_{nullptr};
     HWND backgroundModeLabel_{nullptr};
     HWND backgroundMode_{nullptr};
     HWND cursorExcluded_{nullptr};

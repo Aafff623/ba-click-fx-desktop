@@ -200,11 +200,13 @@ void ControlCenterWindow::applyFonts() const noexcept
 void ControlCenterWindow::applyDpiMetrics() const noexcept
 {
     SendMessageW(backgroundMode_, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(scale(470)), 0);
+    SendMessageW(effectStyle_, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(scale(470)), 0);
     SendMessageW(effectsMode_, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(scale(320)), 0);
     const std::array comboBoxes{
         languageSelector_,
         bloomQuality_,
         effectsMode_,
+        effectStyle_,
         backgroundMode_,
         fxProfileSelector_,
         displaySelector_,
@@ -1066,7 +1068,24 @@ void ControlCenterWindow::layoutControls(
         contentTop + scale(50),
         groupWidth,
         scale(34));
-    const int checkboxTop = contentTop + scale(88);
+    // The style axis sits directly under the performance tier on one shared
+    // row: both select which engine runs, and the rest of the Effects group
+    // applies to the selected style. The minimum client height is fully
+    // committed, so the row mirrors bloomQuality instead of adding a band.
+    const int styleLabelWidth = scale(106);
+    moveControl(
+        effectStyleLabel_,
+        groupLeft,
+        contentTop + scale(88),
+        styleLabelWidth,
+        scale(34));
+    moveControl(
+        effectStyle_,
+        groupLeft + styleLabelWidth,
+        contentTop + scale(88),
+        groupWidth - styleLabelWidth,
+        scale(34));
+    const int checkboxTop = contentTop + scale(122);
     const int checkboxWidth = groupWidth / 4;
     moveControl(effectsEnabled_, groupLeft, checkboxTop, checkboxWidth, scale(30));
     moveControl(clickEnabled_, groupLeft + checkboxWidth, checkboxTop, checkboxWidth, scale(30));

@@ -357,6 +357,18 @@ LRESULT CALLBACK themeColorEditProcedure(
     return -1;
 }
 
+[[nodiscard]] int effectStyleIndex(const bafx::config::EffectStyle style) noexcept
+{
+    switch (style)
+    {
+    case bafx::config::EffectStyle::BA:
+        return 0;
+    case bafx::config::EffectStyle::GlowFluid:
+        return 1;
+    }
+    return -1;
+}
+
 [[nodiscard]] int effectsModeIndex(
     const bafx::config::EffectsMode mode) noexcept
 {
@@ -1229,6 +1241,21 @@ bool ControlCenterWindow::createControls()
         L"STATIC",
         TextId::RenderMode,
         SS_LEFT | SS_NOPREFIX);
+    effectStyleLabel_ = createChild(
+        L"STATIC",
+        TextId::EffectStyleLabel,
+        SS_LEFT | SS_NOPREFIX);
+    effectStyle_ = createChild(
+        WC_COMBOBOXW,
+        L"",
+        CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP,
+        ControlId::EffectStyle);
+    if (effectStyle_ != nullptr)
+    {
+        static_cast<void>(SendMessageW(effectStyle_, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(tr(TextId::EffectStyleBa))));
+        static_cast<void>(SendMessageW(effectStyle_, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(tr(TextId::EffectStyleGlowFluid))));
+        static_cast<void>(SendMessageW(effectStyle_, CB_SETMINVISIBLE, 2U, 0));
+    }
     backgroundMode_ = createChild(
         WC_COMBOBOXW,
         L"",
@@ -2051,6 +2078,25 @@ void ControlCenterWindow::onCommand(
                 break;
             default:
                 setError(TextId::UnknownBloomQuality);
+                break;
+            }
+        }
+        break;
+    case ControlId::EffectStyle:
+        if (notificationCode == CBN_SELCHANGE)
+        {
+            // The style axis selects the engine; the Host applies it live.
+            // Glow consumes raw move samples itself, so no input policy is
+            // silently rewritten when the style changes.
+            switch (SendMessageW(effectStyle_, CB_GETCURSEL, 0U, 0))
+            {
+            case 0:
+                applyPatch("effectStyle", "\"ba\"");
+                break;
+            case 1:
+                applyPatch("effectStyle", "\"glowFluid\"");
+                break;
+            default:
                 break;
             }
         }
@@ -3173,6 +3219,7 @@ void ControlCenterWindow::updateControls(
     controlsInitialized_ = true;
     setComboSelection(bloomQuality_, qualityIndex(bafx::config::bloomQualityForDiffusion(
             config.effects.bloomDiffusion)));
+    setComboSelection(effectStyle_, effectStyleIndex(config.effectStyle));
     setComboSelection(backgroundMode_, renderModeIndex(config.background.mode));
     setChecked(cursorExcluded_, config.background.cursorExcluded);
     setChecked(
@@ -4287,6 +4334,7 @@ void ControlCenterWindow::setConnected(const bool connected) noexcept
         themeColorEdit_,
         themeColorChoose_,
         bloomQuality_,
+        effectStyle_,
         backgroundMode_,
         cursorExcluded_,
         allowSystemBorder_,
