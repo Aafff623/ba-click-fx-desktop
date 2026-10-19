@@ -61,6 +61,60 @@ namespace
 
 constexpr std::uint32_t maximumMessagesPerFrame = 256U;
 constexpr std::uint32_t maximumInputMessagesPerFrame = 4096U;
+
+// Parses a validated #rrggbb theme color into linear-ish [0, 1] channels for
+// the Glow placeholder. Invalid input falls back to the reference purple so a
+// malformed config can never blank the effect.
+void parseGlowHexColor(
+    const std::string_view value,
+    float& red,
+    float& green,
+    float& blue) noexcept
+{
+    red = 0.486F;
+    green = 0.227F;
+    blue = 0.929F;
+    if (value.size() != 7U || value.front() != '#')
+    {
+        return;
+    }
+    const auto channel = [&value](const std::size_t index) noexcept
+    {
+        const auto digit = [](const char character) noexcept
+        {
+            if (character >= '0' && character <= '9')
+            {
+                return static_cast<int>(character - '0');
+            }
+            if (character >= 'a' && character <= 'f')
+            {
+                return static_cast<int>(character - 'a') + 10;
+            }
+            if (character >= 'A' && character <= 'F')
+            {
+                return static_cast<int>(character - 'A') + 10;
+            }
+            return -1;
+        };
+        const int high = digit(value[index]);
+        const int low = digit(value[index + 1U]);
+        if (high < 0 || low < 0)
+        {
+            return -1.0F;
+        }
+        return static_cast<float>((high << 4) | low) / 255.0F;
+    };
+    const float parsedRed = channel(1);
+    const float parsedGreen = channel(3);
+    const float parsedBlue = channel(5);
+    if (parsedRed < 0.0F || parsedGreen < 0.0F || parsedBlue < 0.0F)
+    {
+        return;
+    }
+    red = parsedRed;
+    green = parsedGreen;
+    blue = parsedBlue;
+}
 constexpr auto smokeTestDeadline = std::chrono::seconds(5);
 constexpr auto performanceReportInterval = std::chrono::seconds(10);
 constexpr auto framePacingDeviceProbePeriod = std::chrono::milliseconds(250);
@@ -3598,6 +3652,27 @@ int runApplication(
                 renderer.setThemeColor(config.effects.themeColor);
                 renderer.setSpout2Enabled(
                     config.system.spout2Enabled || options.spout2);
+                // Glow style wiring: the style switch and appearance ride the
+                // same config-application path, so a live SetConfig takes
+                // effect without a restart. The BA path is untouched.
+                const bool glowStyle =
+                    config.effectStyle == bafx::config::EffectStyle::GlowFluid;
+                renderer.setGlowStyleEnabled(glowStyle);
+                float glowRed = 0.486F;
+                float glowGreen = 0.227F;
+                float glowBlue = 0.929F;
+                parseGlowHexColor(
+                    config.glow.color,
+                    glowRed,
+                    glowGreen,
+                    glowBlue);
+                renderer.setGlowAppearance(
+                    glowRed,
+                    glowGreen,
+                    glowBlue,
+                    config.glow.intensity,
+                    config.glow.trailWidthPx,
+                    config.glow.linger);
                 recordSpout2Status();
                 if (bloomDeviceRecovered)
                 {
@@ -4370,6 +4445,11 @@ int runApplication(
         pendingMessageDispatch = MessageDispatchDiagnostics{};
 
         const bafx::fx::SimulationTime wallTime = clock.now();
+        // The style axis is orthogonal to the performance tier: it selects
+        // which engine renders, so both the input tap and the idle signal
+        // below branch on it.
+        const bool glowStyle =
+            config.effectStyle == bafx::config::EffectStyle::GlowFluid;
         if (!shouldRender)
         {
             // The vector is populated only inside the pacing branch. Do not
@@ -4471,6 +4551,24 @@ int runApplication(
         {
             break;
         }
+        if (glowStyle)
+        {
+            // Glow consumes raw move samples directly from the same queue the
+            // BA router reads; the BA simulation still receives them but its
+            // output is not rendered while the Glow style is active.
+            const double nowSeconds =
+                std::chrono::duration<double>(wallTime).count();
+            for (const auto& pointerEvent : pointerEvents)
+            {
+                if (pointerEvent.kind == bafx::windows::PointerEventKind::Move)
+                {
+                    renderer.submitGlowPointerSample(
+                        pointerEvent.screenPosition.x,
+                        pointerEvent.screenPosition.y,
+                        nowSeconds);
+                }
+            }
+        }
         if ((!controlState.paused || enteringPause) && config.effects.enabled)
         {
             for (const auto& ownedSession : displaySessions.sessions())
@@ -4484,7 +4582,9 @@ int runApplication(
                 ? simulation.snapshot(bafx::desktop::toViewport(window.size()), renderTime)
                 : bafx::fx::FrameSnapshot{};
             bafx::desktop::applyVisualConfig(snapshot, config);
-            lastPresentedDrawableContent = snapshot.hasDrawableContent();
+            lastPresentedDrawableContent = glowStyle
+                ? renderer.glowNeedsFrame()
+                : snapshot.hasDrawableContent();
             // A paused DComp surface can persist indefinitely. Its last frame
             // may only bake a current background; normal animation tolerates
             // short WGC cadence gaps without modulating FX energy.

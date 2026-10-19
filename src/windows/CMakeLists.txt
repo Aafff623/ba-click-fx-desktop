@@ -11,6 +11,8 @@ add_library(
         src/display_topology.cpp
         src/external_host_trust.cpp
         src/fx_gpu_renderer.cpp
+        src/glow_fluid_renderer.cpp
+        src/glow_trail_state.cpp
         src/gpu_timestamp_profiler.cpp
         src/gpu_texture_readback.cpp
         src/ipc.cpp

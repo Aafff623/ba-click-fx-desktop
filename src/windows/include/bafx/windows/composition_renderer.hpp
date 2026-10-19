@@ -10,6 +10,7 @@
 #include "bafx/windows/display_topology.hpp"
 #include "bafx/windows/fx_bloom_settings.hpp"
 #include "bafx/windows/fx_gpu_renderer.hpp"
+#include "bafx/windows/glow_fluid_renderer.hpp"
 #include "bafx/windows/gpu_timestamp_profiler.hpp"
 #include "bafx/windows/overlay_window.hpp"
 #include "bafx/windows/spout2_sender.hpp"
@@ -323,6 +324,27 @@ public:
     [[nodiscard]] bool activeFxRoiEnabled() const noexcept;
     void setThemeColor(std::string_view themeColor);
     void setOverlayProfile(FxOverlayProfile profile);
+    // The Glow style shares this device, swap chain and present path. When
+    // enabled, renderFrame routes to the placeholder Glow renderer instead of
+    // the authored FX engine; the BA path is untouched.
+    void setGlowStyleEnabled(bool enabled) noexcept;
+    [[nodiscard]] bool glowStyleEnabled() const noexcept;
+    // Window-local pixels, y down, seconds on the same monotonic clock the
+    // render loop uses for wallTime.
+    void submitGlowPointerSample(
+        float x,
+        float y,
+        double nowSeconds) noexcept;
+    // Appearance arrives as plain values so this library keeps its
+    // independence from the configuration schema.
+    void setGlowAppearance(
+        float colorR,
+        float colorG,
+        float colorB,
+        float intensity,
+        float radiusPx,
+        float linger) noexcept;
+    [[nodiscard]] bool glowNeedsFrame() const noexcept;
     void setSpout2Enabled(bool enabled);
     [[nodiscard]] bool spout2Enabled() const noexcept;
     [[nodiscard]] std::string_view spout2SenderName() const noexcept;
@@ -469,6 +491,8 @@ private:
     bool deviceRemovedNotificationRegistered_{false};
     std::unique_ptr<GpuTimestampProfiler> gpuTimestampProfiler_{};
     std::unique_ptr<FxGpuRenderer> fxRenderer_{};
+    std::unique_ptr<GlowFluidRenderer> glowRenderer_{};
+    bool glowStyleEnabled_{false};
     std::unique_ptr<Spout2Sender> spout2Sender_{};
     bool spout2Enabled_{false};
     std::unique_ptr<WgcBackgroundSensor> backgroundSensor_{};

@@ -1143,6 +1143,12 @@ OutputResizeStatus CompositionRenderer::resizeOutput(const WindowSize size)
             size_ = size;
             createRenderTarget();
             fxRenderer_->resize(size);
+            if (glowRenderer_ != nullptr)
+            {
+                glowRenderer_->setViewportSize(
+                    static_cast<float>(size.width),
+                    static_cast<float>(size.height));
+            }
             recordingRenderTarget_.Reset();
             recordingTexture_.Reset();
             createSpout2RecordingTarget();
@@ -1249,6 +1255,70 @@ void CompositionRenderer::setOverlayProfile(const FxOverlayProfile profile)
 {
     fxRenderer_->setOverlayProfile(profile);
     overlayProfile_ = profile;
+}
+
+void CompositionRenderer::setGlowStyleEnabled(const bool enabled) noexcept
+{
+    glowStyleEnabled_ = enabled && glowRenderer_ != nullptr;
+    if (!glowStyleEnabled_ && glowRenderer_ != nullptr)
+    {
+        // Leaving the Glow style drops its accumulated trail immediately so a
+        // stale glow cannot survive into the next BA session.
+        glowRenderer_->reset();
+    }
+}
+
+bool CompositionRenderer::glowStyleEnabled() const noexcept
+{
+    return glowStyleEnabled_;
+}
+
+void CompositionRenderer::submitGlowPointerSample(
+    const float x,
+    const float y,
+    const double nowSeconds) noexcept
+{
+    if (glowRenderer_ != nullptr)
+    {
+        // Screen coordinates arrive from the raw input queue; the overlay
+        // window owns the conversion so the trail lands in window-local
+        // pixels on any monitor.
+        POINT point{
+            static_cast<LONG>(x),
+            static_cast<LONG>(y)};
+        ScreenToClient(window_, &point);
+        glowRenderer_->submitPointerSample(
+            static_cast<float>(point.x),
+            static_cast<float>(point.y),
+            nowSeconds);
+    }
+}
+
+void CompositionRenderer::setGlowAppearance(
+    const float colorR,
+    const float colorG,
+    const float colorB,
+    const float intensity,
+    const float radiusPx,
+    const float linger) noexcept
+{
+    if (glowRenderer_ != nullptr)
+    {
+        glowRenderer_->setSettings(
+            GlowRenderSettings{
+                colorR,
+                colorG,
+                colorB,
+                intensity,
+                radiusPx,
+                linger});
+    }
+}
+
+bool CompositionRenderer::glowNeedsFrame() const noexcept
+{
+    return glowStyleEnabled_ && glowRenderer_ != nullptr
+        && glowRenderer_->needsFrame();
 }
 
 void CompositionRenderer::setSpout2Enabled(const bool enabled)
@@ -1514,16 +1584,30 @@ CompositionFrameDiagnostics CompositionRenderer::renderFrame(
     gpuTimestampFrame.checkpoint(
         GpuTimestampCheckpoint::BackgroundSnapshotComplete);
 
-    diagnostics.fx = fxRenderer_->render(
-        snapshot,
-        renderTarget_.Get(),
-        background,
-        gpuTimestampFrame.recorder(),
-        spout2Enabled_ && recordingRenderTarget_ != nullptr
-            ? recordingRenderTarget_.Get()
-            : nullptr,
-        activeRoi,
-        true);
+    if (glowStyleEnabled_ && glowRenderer_ != nullptr)
+    {
+        // Glow placeholder slice: additive trail into the same FP16 target.
+        // This slice carries no ROI, no background and no partial-output
+        // contract; the fluid pipeline lands those in the next ticket.
+        const double wallTimeSeconds =
+            std::chrono::duration<double>(wallTime).count();
+        glowRenderer_->render(renderTarget_.Get(), wallTimeSeconds);
+        diagnostics.fx = FxRenderCpuDiagnostics{};
+        diagnostics.fx.visualContent = glowRenderer_->needsFrame();
+    }
+    else
+    {
+        diagnostics.fx = fxRenderer_->render(
+            snapshot,
+            renderTarget_.Get(),
+            background,
+            gpuTimestampFrame.recorder(),
+            spout2Enabled_ && recordingRenderTarget_ != nullptr
+                ? recordingRenderTarget_.Get()
+                : nullptr,
+            activeRoi,
+            true);
+    }
     PartialOutputRecoveryGuard partialOutputRecovery(
         *fxRenderer_,
         diagnostics.fx.primaryActiveFxRoi.partialFinalOutput);
@@ -2502,6 +2586,21 @@ void CompositionRenderer::createDeviceResources()
         deviceInfo_.output.mapping);
     fxRenderer_->setThemeColor(themeColor_);
     fxRenderer_->setOverlayProfile(overlayProfile_);
+    // The Glow placeholder shares the same device and context. A creation
+    // failure degrades to the BA path instead of taking the Host down.
+    try
+    {
+        glowRenderer_ = std::make_unique<GlowFluidRenderer>(
+            device_.Get(),
+            context_.Get());
+        glowRenderer_->setViewportSize(
+            static_cast<float>(size_.width),
+            static_cast<float>(size_.height));
+    }
+    catch (const std::exception&)
+    {
+        glowRenderer_.reset();
+    }
     createSpout2RecordingTarget();
     setReadbackDiagnostics(readbackDiagnosticsEnabled_);
     registerDeviceRemovedNotification();
