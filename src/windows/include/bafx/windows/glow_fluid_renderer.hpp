@@ -31,6 +31,8 @@ struct GlowRenderSettings final
     float glow{0.5F};
     float grain{0.15F};
     float hotspot{0.0F};
+    float followSpeed{1.0F};
+    bool clickBurst{true};
     GlowSimulationQuality quality{GlowSimulationQuality::High};
 };
 
@@ -38,11 +40,13 @@ struct GlowRenderSettings final
 // and renders into the same swap-chain render target, so the Windows底座
 // (window, DComp, present, device recovery) stays untouched.
 //
-// The visual side is the fluid pipeline: pointer samples become velocity and
-// dye splats, the simulation advances, and the display pass composites into
-// the swap chain. The additive-quad placeholder remains as the degraded path
-// when the pipeline cannot be created, and GlowTrailState keeps driving the
-// idle contract (linger expiry, one transparent frame, then sleep).
+// The visual side is the fluid pipeline: a damped-spring emitter follows the
+// pointer (snapping when followSpeed reaches 1), each frame the emitter's
+// motion becomes velocity and dye splats, clicks inject radial bursts, and
+// the display pass composites into the swap chain. The additive-quad
+// placeholder remains as the degraded path when the pipeline cannot be
+// created, and GlowTrailState drives the idle contract (quiet window at
+// rest, one transparent frame, then sleep).
 class GlowFluidRenderer final
 {
 public:
@@ -61,6 +65,8 @@ public:
         float x,
         float y,
         double nowSeconds) noexcept;
+    // Window-local click position; queued and injected on the next frame.
+    void submitPointerClick(float x, float y) noexcept;
 
     // Expires trail samples against nowSeconds, then draws the current frame
     // into destination. When the trail just emptied, the target is cleared
@@ -73,10 +79,19 @@ public:
 
 private:
     bool createResources();
-    // Fluid path: consume new pointer samples as splats, advance the
-    // simulation, composite into the swap chain.
+    // Fluid path: advance the emitter, splat its motion and queued bursts,
+    // step the simulation, composite into the swap chain.
     void renderFluid(ID3D11RenderTargetView* destination, double nowSeconds);
-    void injectPendingSamples(float dt);
+    // Damped-spring emitter integration, matching the reference emit().
+    void advanceEmitter(float dt) noexcept;
+    // Splats the emitter's frame motion into velocity and dye.
+    void emitFrame(float dt) noexcept;
+    // Injects every queued click as the reference burst() jets.
+    void processBursts() noexcept;
+    // Deterministic xorshift32 in [0, 1) so burst geometry is reproducible.
+    [[nodiscard]] float nextRandom() noexcept;
+    [[nodiscard]] float lightRadius() const noexcept;
+    [[nodiscard]] bool emitterResting() const noexcept;
     // Degraded path used when the fluid pipeline failed to initialize.
     void renderPlaceholder(
         ID3D11RenderTargetView* destination, double nowSeconds);
@@ -86,6 +101,12 @@ private:
         float x;
         float y;
         float alpha;
+    };
+
+    struct PendingBurst final
+    {
+        float x{0.0F};
+        float y{0.0F};
     };
 
     void appendSampleVertices(
@@ -110,13 +131,20 @@ private:
     float viewportHeight_{1.0F};
     std::size_t vertexCapacity_{0U};
     bool resourcesFailed_{false};
-    // Fluid-frame bookkeeping: frame delta, consumed sample cursor and the
-    // last injected position so motion becomes a segment splat.
+    // Emitter bookkeeping: pointer target, damped-spring emitter, frame
+    // delta, queued clicks and a deterministic burst PRNG.
     double lastFrameSeconds_{0.0};
-    std::uint64_t consumedSequence_{0U};
-    bool hasEmittedPosition_{false};
-    float emittedX_{0.0F};
-    float emittedY_{0.0F};
+    float pointerX_{0.0F};
+    float pointerY_{0.0F};
+    bool pointerInside_{false};
+    float emitterX_{0.0F};
+    float emitterY_{0.0F};
+    float emitterVX_{0.0F};
+    float emitterVY_{0.0F};
+    float emitterPreviousX_{0.0F};
+    float emitterPreviousY_{0.0F};
+    std::vector<PendingBurst> pendingBursts_{};
+    std::uint32_t randomState_{0x9E3779B9U};
 };
 
 }

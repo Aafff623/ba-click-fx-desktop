@@ -153,9 +153,9 @@ struct DisplayConstants final
     float grain{0.0F};      // 40
     float time{0.0F};       // 44
     float light{0.0F};      // 48
-    float pad2{0.0F};       // 52
-    float pad3{0.0F};       // 56
-    float pad4{0.0F};       // 60
+    float edgeWidthX{0.0F}; // 52
+    float edgeWidthY{0.0F}; // 56
+    float pad2{0.0F};       // 60
 };
 
 static_assert(sizeof(TransformConstants) == 16U);
@@ -1329,6 +1329,11 @@ void GlowFluidPipeline::display(ID3D11RenderTargetView* destination) noexcept
     constants.grain = appearance_.grain;
     constants.time = timeSeconds_;
     constants.light = 0.0F;
+    // Physical-pixel edge fade converted to uv widths per axis.
+    constants.edgeWidthX =
+        appearance_.edgeFadePx / std::max(viewportWidth_, 1.0F);
+    constants.edgeWidthY =
+        appearance_.edgeFadePx / std::max(viewportHeight_, 1.0F);
     if (!updateVertexConstants(
             1.0F / viewportWidth_, 1.0F / viewportHeight_))
     {

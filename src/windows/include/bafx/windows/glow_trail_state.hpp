@@ -1,16 +1,16 @@
 #pragma once
 
-#include <cstdint>
 #include <vector>
 
 namespace bafx::windows
 {
 
-// Placeholder trail accumulation for the Glow style slice. The real fluid
-// simulation replaces the visual side in the next ticket, but this state
-// machine (accumulate, expire by linger, transparent frame, idle) is the
-// contract the product depends on and is deliberately GPU-free so it can be
-// tested without a device.
+// Pointer-activity window for the Glow style. Samples expire on the
+// reference's quiet window (linger * 1200ms + 900ms) and only while the
+// emitter is at rest, so an emitter still catching up with a stopped
+// pointer keeps the render loop alive. The state machine (accumulate,
+// expire, one transparent frame, idle) is the contract the product depends
+// on and is deliberately GPU-free so it can be tested without a device.
 inline constexpr std::size_t maximumGlowTrailSamples = 1024U;
 
 struct GlowTrailSample final
@@ -18,9 +18,6 @@ struct GlowTrailSample final
     float x{0.0F};
     float y{0.0F};
     double atSeconds{0.0};
-    // Monotonic id assigned on insert. The fluid renderer consumes samples
-    // by id so expired (erased) samples never shift a frame's cursor.
-    std::uint64_t sequence{0U};
 };
 
 class GlowTrailState final
@@ -30,10 +27,11 @@ public:
     void setRadius(float pixels) noexcept;
 
     void addSample(float x, float y, double nowSeconds) noexcept;
-    // Expires samples older than the linger window. When the last live sample
-    // expires, one transparent frame is owed so the overlay does not keep the
-    // faded trail on screen after idle.
-    void advance(double nowSeconds) noexcept;
+    // Expires samples older than the quiet window, but only while the
+    // emitter is at rest (|velocity| below the reference's 1 px/s). When the
+    // last live sample expires, one transparent frame is owed so the overlay
+    // does not keep the faded glow on screen after idle.
+    void advance(double nowSeconds, bool emitterResting) noexcept;
     // Called after the owed transparent frame was presented.
     void clearPendingTransparentFrame() noexcept;
     void reset() noexcept;
@@ -44,6 +42,10 @@ public:
     [[nodiscard]] float linger() const noexcept;
     [[nodiscard]] float radius() const noexcept;
 
+    // The quiet window after the last activity before the style sleeps,
+    // matching the reference's linger * 1200 + 900 milliseconds.
+    [[nodiscard]] float quietWindow() const noexcept;
+
     // Per-sample fade weight in [0, 1]; 1 is fresh, 0 is fully expired.
     [[nodiscard]] static float fadeWeight(
         const GlowTrailSample& sample,
@@ -52,7 +54,6 @@ public:
 
 private:
     std::vector<GlowTrailSample> samples_{};
-    std::uint64_t nextSequence_{1U};
     float linger_{0.3F};
     float radius_{3.0F};
     bool pendingTransparentFrame_{false};

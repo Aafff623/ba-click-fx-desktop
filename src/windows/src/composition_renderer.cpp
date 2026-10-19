@@ -1294,24 +1294,30 @@ void CompositionRenderer::submitGlowPointerSample(
     }
 }
 
-void CompositionRenderer::setGlowAppearance(
-    const float colorR,
-    const float colorG,
-    const float colorB,
-    const float intensity,
-    const float radiusPx,
-    const float linger) noexcept
+void CompositionRenderer::submitGlowPointerClick(
+    const float x,
+    const float y) noexcept
 {
     if (glowRenderer_ != nullptr)
     {
-        glowRenderer_->setSettings(
-            GlowRenderSettings{
-                colorR,
-                colorG,
-                colorB,
-                intensity,
-                radiusPx,
-                linger});
+        // Same screen-to-window conversion as the move samples so the burst
+        // lands under the physical cursor on any monitor.
+        POINT point{
+            static_cast<LONG>(x),
+            static_cast<LONG>(y)};
+        ScreenToClient(window_, &point);
+        glowRenderer_->submitPointerClick(
+            static_cast<float>(point.x),
+            static_cast<float>(point.y));
+    }
+}
+
+void CompositionRenderer::setGlowAppearance(
+    const GlowRenderSettings& settings) noexcept
+{
+    if (glowRenderer_ != nullptr)
+    {
+        glowRenderer_->setSettings(settings);
     }
 }
 

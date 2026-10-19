@@ -452,6 +452,11 @@ BAFX_TEST(glow_fluid_display_and_bloom_constants_match_cpu_mirror_layout)
     BAFX_CHECK_NEAR(
         static_cast<float>(variableOffset(displayReflection.Get(), "DisplayConstants", "uLight")),
         48.0F, 0.5F);
+    // The physical-pixel edge fade width replaced the reference's fixed 2%
+    // container fade.
+    BAFX_CHECK_NEAR(
+        static_cast<float>(variableOffset(displayReflection.Get(), "DisplayConstants", "uEdgeWidth")),
+        52.0F, 0.5F);
 
     const ComPtr<ID3D11ShaderReflection> downReflection =
         compilePass(kGlowFluidDownShader);

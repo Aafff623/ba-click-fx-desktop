@@ -36,6 +36,9 @@ struct GlowFluidAppearance final
     float glow{0.5F};
     float grain{0.15F};
     float hotspot{0.0F};
+    // Physical-pixel edge fade width; the reference fades a fixed 2% of its
+    // web container, which is wrong for a fullscreen desktop overlay.
+    float edgeFadePx{2.0F};
 };
 
 // Splat payload in the target's native channel meaning: velocity splats use

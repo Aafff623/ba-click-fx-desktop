@@ -41,21 +41,29 @@ void GlowTrailState::addSample(
         // buffer and the GPU vertex budget stay bounded.
         samples_.erase(samples_.begin());
     }
-    samples_.push_back(
-        GlowTrailSample{x, y, nowSeconds, nextSequence_++});
+    samples_.push_back(GlowTrailSample{x, y, nowSeconds});
 }
 
-void GlowTrailState::advance(const double nowSeconds) noexcept
+void GlowTrailState::advance(
+    const double nowSeconds,
+    const bool emitterResting) noexcept
 {
     const bool hadSamples = !samples_.empty();
-    const auto freshEnd = std::remove_if(
-        samples_.begin(),
-        samples_.end(),
-        [this, nowSeconds](const GlowTrailSample& sample)
-        {
-            return fadeWeight(sample, nowSeconds, linger_) <= 0.0F;
-        });
-    samples_.erase(freshEnd, samples_.end());
+    if (emitterResting)
+    {
+        // The reference keeps rendering while the emitter is still catching
+        // up with a stopped pointer, so expiry only runs at rest.
+        const float window = quietWindow();
+        const auto freshEnd = std::remove_if(
+            samples_.begin(),
+            samples_.end(),
+            [nowSeconds, window](const GlowTrailSample& sample)
+            {
+                return nowSeconds - sample.atSeconds
+                    > static_cast<double>(window);
+            });
+        samples_.erase(freshEnd, samples_.end());
+    }
     if (hadSamples && samples_.empty())
     {
         // The trail just emptied: owe exactly one transparent frame so the
@@ -98,6 +106,12 @@ float GlowTrailState::linger() const noexcept
 float GlowTrailState::radius() const noexcept
 {
     return radius_;
+}
+
+float GlowTrailState::quietWindow() const noexcept
+{
+    // Reference: linger * 1200 + 900 milliseconds after the last activity.
+    return linger_ * 1.2F + 0.9F;
 }
 
 float GlowTrailState::fadeWeight(

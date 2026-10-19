@@ -23,7 +23,7 @@ constexpr std::size_t verticesPerSample = 6U;
 constexpr std::size_t maximumSamples = 1024U;
 
 // Reference emit() constants: velocity splats blend toward the measured
-// pointer velocity, dye splats inject energy/heat/gas additively.
+// emitter velocity, dye splats inject energy/heat/gas additively.
 constexpr float kFlowStrength = 0.45F; // FLOW * 0.6
 constexpr float kDyeEnergy = 5.6F;
 constexpr float kDyeHeat = 5.6F;
@@ -32,6 +32,31 @@ constexpr float kVelocityRadiusScale = 4.0F;
 constexpr float kVelocityRadiusOffset = 18.0F;
 constexpr float kDyeWideScale = 5.0F;
 constexpr float kDyeWideOffset = 6.0F;
+constexpr float kMinimumMotion = 0.05F;
+constexpr float kSpringBaseOmega = 10.0F;
+constexpr float kSpringFollowScale = 50.0F;
+constexpr float kMaximumSpringStep = 0.004F;
+constexpr float kRestingSpeed = 1.0F;
+
+// Reference burst() constants: six radial jets plus a central dye puff.
+constexpr std::uint32_t kBurstJets = 6U;
+constexpr float kBurstJetInset = 3.0F;
+constexpr float kBurstReachBase = 20.0F;
+constexpr float kBurstReachSpan = 14.0F;
+constexpr float kBurstVelocitySpeed = 760.0F;
+constexpr float kBurstVelocityOffset = 0.6F;
+constexpr float kBurstVelocityStrength = 0.9F;
+constexpr float kBurstVelocityRadius = 18.0F;
+constexpr float kBurstDyeEnergy = 2.4F;
+constexpr float kBurstDyeHeat = 2.4F;
+constexpr float kBurstDyeGas = 0.3F;
+constexpr float kBurstCenterEnergy = 1.8F;
+constexpr float kBurstCenterHeat = 1.8F;
+constexpr float kBurstCenterGas = 0.4F;
+constexpr float kBurstCenterRadiusScale = 2.2F;
+constexpr float kBurstCenterWideScale = 7.0F;
+constexpr float kBurstCenterWideOffset = 10.0F;
+
 constexpr float kMinimumFrameDelta = 1.0F / 240.0F;
 constexpr float kMaximumFrameDelta = 1.0F / 30.0F;
 
@@ -176,7 +201,8 @@ void GlowFluidRenderer::setSettings(const GlowRenderSettings& settings) noexcept
             settings.intensity,
             settings.glow,
             settings.grain,
-            settings.hotspot});
+            settings.hotspot,
+            2.0F});
     }
 }
 
@@ -197,7 +223,33 @@ void GlowFluidRenderer::submitPointerSample(
     const float y,
     const double nowSeconds) noexcept
 {
+    if (!pointerInside_)
+    {
+        // First sample after idle snaps the emitter to the pointer so no
+        // streak reaches in from the previous session's last position.
+        pointerX_ = x;
+        pointerY_ = y;
+        emitterX_ = x;
+        emitterY_ = y;
+        emitterVX_ = 0.0F;
+        emitterVY_ = 0.0F;
+        pointerInside_ = true;
+    }
+    else
+    {
+        pointerX_ = x;
+        pointerY_ = y;
+    }
     trail_.addSample(x, y, nowSeconds);
+}
+
+void GlowFluidRenderer::submitPointerClick(const float x, const float y) noexcept
+{
+    if (!settings_.clickBurst)
+    {
+        return;
+    }
+    pendingBursts_.push_back(PendingBurst{x, y});
 }
 
 bool GlowFluidRenderer::createResources()
@@ -343,7 +395,9 @@ void GlowFluidRenderer::renderFluid(
     ID3D11RenderTargetView* destination,
     const double nowSeconds)
 {
-    trail_.advance(nowSeconds);
+    // The reference sleeps only when the pointer has been quiet for the
+    // linger-scaled window AND the emitter has come to rest.
+    trail_.advance(nowSeconds, emitterResting());
     if (trail_.samples().empty())
     {
         if (trail_.pendingTransparentFrame())
@@ -358,6 +412,7 @@ void GlowFluidRenderer::renderFluid(
         // the next pointer entry starts from a clean simulation.
         pipeline_->clearSimulation();
         lastFrameSeconds_ = 0.0;
+        pointerInside_ = false;
         return;
     }
 
@@ -371,82 +426,172 @@ void GlowFluidRenderer::renderFluid(
     }
     lastFrameSeconds_ = nowSeconds;
 
-    injectPendingSamples(deltaSeconds);
+    advanceEmitter(deltaSeconds);
+    emitFrame(deltaSeconds);
+    processBursts();
     pipeline_->step(deltaSeconds);
     pipeline_->display(destination);
 }
 
-void GlowFluidRenderer::injectPendingSamples(const float deltaSeconds)
+void GlowFluidRenderer::advanceEmitter(const float dt) noexcept
 {
-    const std::vector<GlowTrailSample>& samples = trail_.samples();
-    const GlowTrailSample* newest = nullptr;
-    for (const GlowTrailSample& sample : samples)
+    emitterPreviousX_ = emitterX_;
+    emitterPreviousY_ = emitterY_;
+    if (settings_.followSpeed >= 1.0F)
     {
-        if (sample.sequence > consumedSequence_)
-        {
-            newest = &sample;
-        }
+        // followSpeed 1 means the emitter position is the pointer position;
+        // the simulation field still drags naturally.
+        emitterX_ = pointerX_;
+        emitterY_ = pointerY_;
+        // The snap path has no spring velocity; the frame delta keeps the
+        // resting check honest while the pointer moves.
+        emitterVX_ = (emitterX_ - emitterPreviousX_) / dt;
+        emitterVY_ = (emitterY_ - emitterPreviousY_) / dt;
+        return;
     }
-    if (newest == nullptr)
+    const float omega =
+        kSpringBaseOmega + settings_.followSpeed * kSpringFollowScale;
+    const int steps =
+        std::max(1, static_cast<int>(std::ceil(dt / kMaximumSpringStep)));
+    const float h = dt / static_cast<float>(steps);
+    for (int index = 0; index < steps; ++index)
+    {
+        emitterVX_ += (omega * omega * (pointerX_ - emitterX_)
+                       - 2.0F * omega * emitterVX_)
+            * h;
+        emitterVY_ += (omega * omega * (pointerY_ - emitterY_)
+                       - 2.0F * omega * emitterVY_)
+            * h;
+        emitterX_ += emitterVX_ * h;
+        emitterY_ += emitterVY_ * h;
+    }
+}
+
+void GlowFluidRenderer::emitFrame(const float dt) noexcept
+{
+    if (pipeline_ == nullptr)
     {
         return;
     }
-    consumedSequence_ = newest->sequence;
-
-    float fromX = newest->x;
-    float fromY = newest->y;
-    if (hasEmittedPosition_)
+    const float dx = emitterX_ - emitterPreviousX_;
+    const float dy = emitterY_ - emitterPreviousY_;
+    if (std::hypot(dx, dy) < kMinimumMotion)
     {
-        fromX = emittedX_;
-        fromY = emittedY_;
+        return;
     }
-    emittedX_ = newest->x;
-    emittedY_ = newest->y;
-    hasEmittedPosition_ = true;
 
-    // Reference lightRadius: never thinner than half the trail width, and at
-    // least ~0.9 dye texels so the splat survives downsampling.
-    const float dyeHeight = static_cast<float>(pipeline_->dyeHeight());
-    const float radius = std::max(
-        settings_.radiusPx * 0.5F,
-        dyeHeight > 0.0F ? (viewportHeight_ / dyeHeight) * 0.9F : 1.0F);
+    const float radius = lightRadius();
     const float wideRadius = radius * kDyeWideScale + kDyeWideOffset;
     const float velocityRadius =
         radius * kVelocityRadiusScale + kVelocityRadiusOffset;
 
-    const bool moving = std::hypot(newest->x - fromX, newest->y - fromY) > 0.05F;
-    const GlowSplatMode velocityMode =
-        moving ? GlowSplatMode::SegmentMix : GlowSplatMode::PointMix;
-    const GlowSplatMode dyeMode =
-        moving ? GlowSplatMode::SegmentAdditive : GlowSplatMode::PointAdditive;
-
-    if (moving)
-    {
-        // Pointer velocity in screen pixels per second; the pipeline converts
-        // it to simulation grid units.
-        pipeline_->splatVelocity(
-            fromX,
-            fromY,
-            newest->x,
-            newest->y,
-            velocityRadius,
-            GlowSplatValue{
-                (newest->x - fromX) / deltaSeconds,
-                (newest->y - fromY) / deltaSeconds,
-                0.0F},
-            velocityMode,
-            kFlowStrength);
-    }
+    // Emitter velocity in screen pixels per second; the pipeline converts it
+    // to simulation grid units.
+    pipeline_->splatVelocity(
+        emitterPreviousX_,
+        emitterPreviousY_,
+        emitterX_,
+        emitterY_,
+        velocityRadius,
+        GlowSplatValue{dx / dt, dy / dt, 0.0F},
+        GlowSplatMode::SegmentMix,
+        kFlowStrength);
     pipeline_->splatDye(
-        fromX,
-        fromY,
-        newest->x,
-        newest->y,
+        emitterPreviousX_,
+        emitterPreviousY_,
+        emitterX_,
+        emitterY_,
         radius,
         wideRadius,
         GlowSplatValue{kDyeEnergy, kDyeHeat, kDyeGas},
-        dyeMode,
+        GlowSplatMode::SegmentAdditive,
         1.0F);
+}
+
+void GlowFluidRenderer::processBursts() noexcept
+{
+    if (pendingBursts_.empty() || pipeline_ == nullptr)
+    {
+        return;
+    }
+    const float radius = lightRadius();
+    const float wideRadius = radius * kDyeWideScale + kDyeWideOffset;
+    for (const PendingBurst& burst : pendingBursts_)
+    {
+        const float base = nextRandom() * 2.0F * 3.14159265F;
+        for (std::uint32_t jet = 0U; jet < kBurstJets; ++jet)
+        {
+            const float angle = base
+                + static_cast<float>(jet) / static_cast<float>(kBurstJets)
+                      * 2.0F * 3.14159265F
+                + (nextRandom() - 0.5F) * 0.5F;
+            const float reach =
+                kBurstReachBase + nextRandom() * kBurstReachSpan;
+            const float cosAngle = std::cos(angle);
+            const float sinAngle = std::sin(angle);
+            const float ax = burst.x + cosAngle * kBurstJetInset;
+            const float ay = burst.y + sinAngle * kBurstJetInset;
+            const float bx = burst.x + cosAngle * reach;
+            const float by = burst.y + sinAngle * reach;
+            pipeline_->splatVelocity(
+                ax,
+                ay,
+                bx,
+                by,
+                kBurstVelocityRadius,
+                GlowSplatValue{
+                    std::cos(angle + kBurstVelocityOffset) * kBurstVelocitySpeed,
+                    std::sin(angle + kBurstVelocityOffset) * kBurstVelocitySpeed,
+                    0.0F},
+                GlowSplatMode::PointMix,
+                kBurstVelocityStrength);
+            pipeline_->splatDye(
+                ax,
+                ay,
+                bx,
+                by,
+                radius * 1.1F,
+                wideRadius,
+                GlowSplatValue{
+                    kBurstDyeEnergy, kBurstDyeHeat, kBurstDyeGas},
+                GlowSplatMode::PointAdditive,
+                1.0F);
+        }
+        pipeline_->splatDye(
+            burst.x,
+            burst.y,
+            burst.x + 0.01F,
+            burst.y,
+            radius * kBurstCenterRadiusScale,
+            radius * kBurstCenterWideScale + kBurstCenterWideOffset,
+            GlowSplatValue{
+                kBurstCenterEnergy, kBurstCenterHeat, kBurstCenterGas},
+            GlowSplatMode::PointAdditive,
+            1.0F);
+    }
+    pendingBursts_.clear();
+}
+
+float GlowFluidRenderer::lightRadius() const noexcept
+{
+    const float dyeHeight = static_cast<float>(pipeline_->dyeHeight());
+    return std::max(
+        settings_.radiusPx * 0.5F,
+        dyeHeight > 0.0F ? (viewportHeight_ / dyeHeight) * 0.9F : 1.0F);
+}
+
+bool GlowFluidRenderer::emitterResting() const noexcept
+{
+    return std::hypot(emitterVX_, emitterVY_) < kRestingSpeed;
+}
+
+float GlowFluidRenderer::nextRandom() noexcept
+{
+    // xorshift32; deterministic so burst geometry is reproducible in tests.
+    randomState_ ^= randomState_ << 13;
+    randomState_ ^= randomState_ >> 17;
+    randomState_ ^= randomState_ << 5;
+    return static_cast<float>(randomState_ % 100000U) / 100000.0F;
 }
 
 void GlowFluidRenderer::renderPlaceholder(
@@ -454,7 +599,9 @@ void GlowFluidRenderer::renderPlaceholder(
     const double nowSeconds)
 {
 
-    trail_.advance(nowSeconds);
+    // The degraded path has no emitter; treat it as permanently resting so
+    // the shared idle contract still expires the trail.
+    trail_.advance(nowSeconds, true);
     const bool pendingTransparent = trail_.pendingTransparentFrame();
     if (trail_.samples().empty() && !pendingTransparent)
     {
@@ -571,10 +718,16 @@ void GlowFluidRenderer::reset() noexcept
         pipeline_->reset();
     }
     lastFrameSeconds_ = 0.0;
-    consumedSequence_ = 0U;
-    hasEmittedPosition_ = false;
-    emittedX_ = 0.0F;
-    emittedY_ = 0.0F;
+    pointerInside_ = false;
+    pointerX_ = 0.0F;
+    pointerY_ = 0.0F;
+    emitterX_ = 0.0F;
+    emitterY_ = 0.0F;
+    emitterVX_ = 0.0F;
+    emitterVY_ = 0.0F;
+    emitterPreviousX_ = 0.0F;
+    emitterPreviousY_ = 0.0F;
+    pendingBursts_.clear();
 }
 
 }

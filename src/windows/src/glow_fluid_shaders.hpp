@@ -346,8 +346,8 @@ float4 main(PSInput input) : SV_TARGET
 }
 )hlsl";
 
-// Final composite: shade dye, add bloom, apply grain and the reference's
-// container edge fade, and write a premultiplied frame for the swap chain.
+// Final composite: shade dye, add bloom, apply grain and a physical-pixel
+// edge fade, and write a premultiplied frame for the swap chain.
 inline constexpr char kGlowFluidDisplayShader[] = R"hlsl(
 cbuffer DisplayConstants : register(b0)
 {
@@ -359,6 +359,7 @@ cbuffer DisplayConstants : register(b0)
     float uGrain;
     float uTime;
     float uLight;
+    float2 uEdgeWidth;
 }
 
 Texture2D uDye : register(t0);
@@ -377,7 +378,13 @@ float4 main(PSInput input) : SV_TARGET
     float3 dye = uDye.Sample(linearSampler, input.vUv).xyz;
     float3 light = shadeDye(dye, uColor, uSecondary, uIntensity, uHotspot);
     float3 bloom = uBloom.Sample(linearSampler, input.vUv).rgb * uGlow;
-    float edge = smoothstep(0.0, 0.02, min(min(input.vUv.x, 1.0 - input.vUv.x), min(input.vUv.y, 1.0 - input.vUv.y)));
+    // The reference fades a fixed 2% of the container; a fullscreen desktop
+    // overlay instead fades a physical pixel width supplied by the host.
+    float edge = smoothstep(
+        0.0,
+        uEdgeWidth.x,
+        min(input.vUv.x, 1.0 - input.vUv.x));
+    edge *= smoothstep(0.0, uEdgeWidth.y, min(input.vUv.y, 1.0 - input.vUv.y));
     float grain = 1.0 + (hash(input.position.xy + frac(uTime * 13.7) * 97.0) - 0.5) * uGrain * 2.0;
     if (uLight > 0.5)
     {

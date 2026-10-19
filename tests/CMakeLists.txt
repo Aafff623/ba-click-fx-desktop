@@ -598,6 +598,7 @@ if(WIN32)
         borderless_capture_access_tests.cpp
         display_capabilities_tests.cpp
         external_host_trust_tests.cpp
+        glow_color_tests.cpp
         glow_trail_state_tests.cpp
         gpu_timestamp_profiler_tests.cpp
         ipc_client_tests.cpp
@@ -769,6 +770,17 @@ if(WIN32)
     bafx_enable_warnings(bafx_glow_fluid_pipeline_tests)
     add_test(NAME glow_fluid_pipeline COMMAND bafx_glow_fluid_pipeline_tests)
     set_target_properties(bafx_glow_fluid_pipeline_tests PROPERTIES FOLDER "Tests")
+
+    add_executable(
+        bafx_glow_fluid_renderer_tests
+        test_main.cpp
+        glow_fluid_renderer_tests.cpp
+    )
+    target_link_libraries(bafx_glow_fluid_renderer_tests PRIVATE bafx::windows)
+    target_compile_features(bafx_glow_fluid_renderer_tests PRIVATE cxx_std_20)
+    bafx_enable_warnings(bafx_glow_fluid_renderer_tests)
+    add_test(NAME glow_fluid_renderer COMMAND bafx_glow_fluid_renderer_tests)
+    set_target_properties(bafx_glow_fluid_renderer_tests PROPERTIES FOLDER "Tests")
 
     add_executable(
         bafx_gpu_pipeline_tests

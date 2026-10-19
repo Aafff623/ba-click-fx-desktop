@@ -325,8 +325,8 @@ public:
     void setThemeColor(std::string_view themeColor);
     void setOverlayProfile(FxOverlayProfile profile);
     // The Glow style shares this device, swap chain and present path. When
-    // enabled, renderFrame routes to the placeholder Glow renderer instead of
-    // the authored FX engine; the BA path is untouched.
+    // enabled, renderFrame routes to the Glow renderer instead of the
+    // authored FX engine; the BA path is untouched.
     void setGlowStyleEnabled(bool enabled) noexcept;
     [[nodiscard]] bool glowStyleEnabled() const noexcept;
     // Window-local pixels, y down, seconds on the same monotonic clock the
@@ -335,15 +335,11 @@ public:
         float x,
         float y,
         double nowSeconds) noexcept;
+    // Window-local click position; queued for the next rendered frame.
+    void submitGlowPointerClick(float x, float y) noexcept;
     // Appearance arrives as plain values so this library keeps its
     // independence from the configuration schema.
-    void setGlowAppearance(
-        float colorR,
-        float colorG,
-        float colorB,
-        float intensity,
-        float radiusPx,
-        float linger) noexcept;
+    void setGlowAppearance(const GlowRenderSettings& settings) noexcept;
     [[nodiscard]] bool glowNeedsFrame() const noexcept;
     void setSpout2Enabled(bool enabled);
     [[nodiscard]] bool spout2Enabled() const noexcept;

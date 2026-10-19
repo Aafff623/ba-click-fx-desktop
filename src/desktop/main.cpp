@@ -3,6 +3,7 @@
 #include "bafx/fx/simulation_runtime.hpp"
 #include "bafx/fx/simulation_timeline.hpp"
 #include "bafx/windows/composition_renderer.hpp"
+#include "bafx/windows/glow_color.hpp"
 #include "bafx/windows/display_capabilities.hpp"
 #include "bafx/windows/display_color_monitor.hpp"
 #include "bafx/windows/error.hpp"
@@ -62,59 +63,6 @@ namespace
 constexpr std::uint32_t maximumMessagesPerFrame = 256U;
 constexpr std::uint32_t maximumInputMessagesPerFrame = 4096U;
 
-// Parses a validated #rrggbb theme color into linear-ish [0, 1] channels for
-// the Glow placeholder. Invalid input falls back to the reference purple so a
-// malformed config can never blank the effect.
-void parseGlowHexColor(
-    const std::string_view value,
-    float& red,
-    float& green,
-    float& blue) noexcept
-{
-    red = 0.486F;
-    green = 0.227F;
-    blue = 0.929F;
-    if (value.size() != 7U || value.front() != '#')
-    {
-        return;
-    }
-    const auto channel = [&value](const std::size_t index) noexcept
-    {
-        const auto digit = [](const char character) noexcept
-        {
-            if (character >= '0' && character <= '9')
-            {
-                return static_cast<int>(character - '0');
-            }
-            if (character >= 'a' && character <= 'f')
-            {
-                return static_cast<int>(character - 'a') + 10;
-            }
-            if (character >= 'A' && character <= 'F')
-            {
-                return static_cast<int>(character - 'A') + 10;
-            }
-            return -1;
-        };
-        const int high = digit(value[index]);
-        const int low = digit(value[index + 1U]);
-        if (high < 0 || low < 0)
-        {
-            return -1.0F;
-        }
-        return static_cast<float>((high << 4) | low) / 255.0F;
-    };
-    const float parsedRed = channel(1);
-    const float parsedGreen = channel(3);
-    const float parsedBlue = channel(5);
-    if (parsedRed < 0.0F || parsedGreen < 0.0F || parsedBlue < 0.0F)
-    {
-        return;
-    }
-    red = parsedRed;
-    green = parsedGreen;
-    blue = parsedBlue;
-}
 constexpr auto smokeTestDeadline = std::chrono::seconds(5);
 constexpr auto performanceReportInterval = std::chrono::seconds(10);
 constexpr auto framePacingDeviceProbePeriod = std::chrono::milliseconds(250);
@@ -3658,21 +3606,64 @@ int runApplication(
                 const bool glowStyle =
                     config.effectStyle == bafx::config::EffectStyle::GlowFluid;
                 renderer.setGlowStyleEnabled(glowStyle);
-                float glowRed = 0.486F;
-                float glowGreen = 0.227F;
-                float glowBlue = 0.929F;
-                parseGlowHexColor(
-                    config.glow.color,
-                    glowRed,
-                    glowGreen,
-                    glowBlue);
-                renderer.setGlowAppearance(
-                    glowRed,
-                    glowGreen,
-                    glowBlue,
-                    config.glow.intensity,
-                    config.glow.trailWidthPx,
-                    config.glow.linger);
+                // The Glow style owns its parameter namespace; colors arrive
+                // as sRGB bytes and an empty secondary derives from the
+                // primary by the reference's hue rotation.
+                bafx::windows::GlowRenderSettings glowSettings{};
+                glowSettings.colorR = 0.486F;
+                glowSettings.colorG = 0.227F;
+                glowSettings.colorB = 0.929F;
+                const std::array<float, 3> glowFallback{
+                    0.486F, 0.227F, 0.929F};
+                std::array<float, 3> glowPrimary{};
+                bafx::windows::parseHexColorRgb(
+                    config.glow.color, glowFallback, glowPrimary);
+                glowSettings.colorR = glowPrimary[0];
+                glowSettings.colorG = glowPrimary[1];
+                glowSettings.colorB = glowPrimary[2];
+                const std::array<float, 3> glowPrimaryResolved{
+                    glowSettings.colorR,
+                    glowSettings.colorG,
+                    glowSettings.colorB};
+                if (config.glow.secondaryColor.empty())
+                {
+                    const std::array<float, 3> derived =
+                        bafx::windows::deriveSecondaryByHueRotation(
+                            glowPrimaryResolved);
+                    glowSettings.secondaryR = derived[0];
+                    glowSettings.secondaryG = derived[1];
+                    glowSettings.secondaryB = derived[2];
+                }
+                else
+                {
+                    const std::array<float, 3> secondaryFallback{
+                        glowSettings.secondaryR,
+                        glowSettings.secondaryG,
+                        glowSettings.secondaryB};
+                    std::array<float, 3> glowSecondary{};
+                    bafx::windows::parseHexColorRgb(
+                        config.glow.secondaryColor,
+                        secondaryFallback,
+                        glowSecondary);
+                    glowSettings.secondaryR = glowSecondary[0];
+                    glowSettings.secondaryG = glowSecondary[1];
+                    glowSettings.secondaryB = glowSecondary[2];
+                }
+                glowSettings.intensity = config.glow.intensity;
+                glowSettings.radiusPx = config.glow.trailWidthPx;
+                glowSettings.linger = config.glow.linger;
+                glowSettings.glow = config.glow.glow;
+                glowSettings.grain = config.glow.grain;
+                glowSettings.hotspot = config.glow.hotspot;
+                glowSettings.followSpeed = config.glow.followSpeed;
+                glowSettings.clickBurst = config.glow.clickBurst;
+                glowSettings.quality =
+                    config.glow.quality == bafx::config::GlowQuality::Low
+                    ? bafx::windows::GlowSimulationQuality::Low
+                    : config.glow.quality == bafx::config::GlowQuality::Medium
+                    ? bafx::windows::GlowSimulationQuality::Medium
+                    : bafx::windows::GlowSimulationQuality::High;
+                renderer.setGlowAppearance(glowSettings);
                 recordSpout2Status();
                 if (bloomDeviceRecovered)
                 {
@@ -4566,6 +4557,14 @@ int runApplication(
                         pointerEvent.screenPosition.x,
                         pointerEvent.screenPosition.y,
                         nowSeconds);
+                }
+                else if (
+                    pointerEvent.kind
+                    == bafx::windows::PointerEventKind::LeftButtonDown)
+                {
+                    renderer.submitGlowPointerClick(
+                        pointerEvent.screenPosition.x,
+                        pointerEvent.screenPosition.y);
                 }
             }
         }
