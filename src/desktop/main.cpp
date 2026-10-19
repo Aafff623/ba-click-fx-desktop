@@ -4542,7 +4542,9 @@ int runApplication(
         {
             break;
         }
-        if (glowStyle)
+        // Paused or disabled effects discard the frame's input, exactly like
+        // the BA router path, so nothing replays as a streak after resume.
+        if (glowStyle && !controlState.paused && config.effects.enabled)
         {
             // Glow consumes raw move samples directly from the same queue the
             // BA router reads; the BA simulation still receives them but its

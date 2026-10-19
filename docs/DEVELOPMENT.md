@@ -251,6 +251,33 @@ Host 控制面、快捷键和特效预设共用 `bafx::host_control`；背景捕
 `GetState → GetConfig → GetState` 的版本与代次校验，配置写入和其他操作保持原有同步流程。
 退出时工作线程完成有超时的在途读取并回收；异步模块不持有 HWND。
 
+### GlowFluid 流体样式开发入口
+
+| 职责 | 代码入口 |
+|---|---|
+| HLSL pass 移植（11 个 + 共享 VS/SHADE） | [`glow_fluid_shaders.hpp`](../src/windows/src/glow_fluid_shaders.hpp) |
+| 流体管线（ping-pong 目标、step/display、质量重分配） | [`glow_fluid_pipeline.cpp`](../src/windows/src/glow_fluid_pipeline.cpp) |
+| 渲染器（emitter 弹簧、爆发、休眠状态机） | [`glow_fluid_renderer.cpp`](../src/windows/src/glow_fluid_renderer.cpp) |
+| 颜色解析与 secondary 色相派生 | [`glow_color.hpp`](../src/windows/include/bafx/windows/glow_color.hpp) |
+| 指针活动窗口与 idle 契约 | [`glow_trail_state.cpp`](../src/windows/src/glow_trail_state.cpp) |
+| 样式开关、外观与点击接线 | [`composition_renderer.cpp`](../src/windows/src/composition_renderer.cpp)、[`main.cpp`](../src/desktop/main.cpp) |
+| 参数区与预设 | [`control_center_controls.cpp`](../src/control-center/control_center_controls.cpp)、[`control_center_window.cpp`](../src/control-center/control_center_window.cpp) |
+
+测试分四个目标：`glow_fluid_shader_contract`（编译 + 反射契约，构建期
+`verify_glow_fluid_shaders` 门槛）、`glow_fluid_pipeline`（WARP 数值与资源）、
+`glow_fluid_renderer`（WARP 注入/休眠）、以及并入 `windows` 套件的 trail/color 单测。
+参考实现在 `temp/glow-handoff/BAFX-GlowCursor-Handoff/source/GlowCursor.jsx`（Git-ignored，丢失时从
+`D:\cache\chrome-cache\BAFX_GlowCursor_Handoff_2026-10-19.zip` 重建）。兼容矩阵
+[`glow-fluid-compatibility.md`](glow-fluid-compatibility.md)、偏差清单
+[`glow-fluid-deviations.md`](glow-fluid-deviations.md)、运维与回滚
+[`glow-fluid-operations.md`](glow-fluid-operations.md)。
+
+Glow 改动验证序列：
+
+```powershell
+ctest --preset slim-release -R 'glow_fluid|^config$|^windows$' --timeout 300
+```
+
 完成配置后，布局或显示页改动可以先运行：
 
 ```powershell

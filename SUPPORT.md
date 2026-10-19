@@ -371,6 +371,21 @@ Control Center 不具备该入口，因此首次升级到 0.2.5 仍需用户手�
 
 这些能力即使存在实验代码或架构文档，也不属于本版的支持合同。
 
+## 流体辉光（GlowFluid）样式
+
+- 控制中心基础页「特效样式」可在「蔚蓝档案点击特效」与「流体辉光」之间实时切换；辉光参数位于
+  高级页「辉光参数」分区（强度、尾迹宽度、停留时间、余辉、热点、跟随速度、颗粒、主色/冷却色、
+  模拟质量、点击爆发、恢复余烬预设）。
+- 本版承诺范围：**单主屏 SDR**。流体为每屏独立模拟场，不跨屏连续传递；不依赖 WGC 背景捕获。
+- 已通过自动化验证：shader 编译契约、WARP 数值（平流保真、压力收敛趋势、MacCormack 钳制）、
+  纹理重分配无冲突（D3D11 Debug Layer）、质量热切换、注入/爆发/休眠状态机、配置持久化与
+  样式切换隔离。回归矩阵见 [`docs/glow-fluid-compatibility.md`](docs/glow-fluid-compatibility.md)。
+- **未验证**：实机视觉（贴手程度、消散手感、深浅背景观感）、多屏与负坐标、睡眠/唤醒、真实
+  device removed、高回报率鼠标实测、长时运行性能。以上均不属本版支持合同。
+- 与 Web 参考实现的已知差异（混合语义、边缘渐隐、DPR 等）见
+  [`docs/glow-fluid-deviations.md`](docs/glow-fluid-deviations.md)；运维与回滚见
+  [`docs/glow-fluid-operations.md`](docs/glow-fluid-operations.md)。
+
 ## 测试入口
 
 - `ba-click-fx-desktop.exe --demo-click`：在主屏中心生成一次可见点击后继续运行。
