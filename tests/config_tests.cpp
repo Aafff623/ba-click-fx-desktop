@@ -61,8 +61,11 @@ BAFX_TEST(hotkeys_codec_validation_and_schema19_migration)
     const auto end = old.find("},", start);
     BAFX_CHECK(start != std::string::npos && end != std::string::npos);
     old.erase(start, end + 2U - start);
-    const auto version = old.find("\"schemaVersion\":20");
-    old.replace(version, std::string("\"schemaVersion\":20").size(), "\"schemaVersion\":19");
+    const std::string currentVersionField = "\"schemaVersion\":"
+        + std::to_string(currentSchemaVersion);
+    const auto version = old.find(currentVersionField);
+    BAFX_CHECK(version != std::string::npos);
+    old.replace(version, currentVersionField.size(), "\"schemaVersion\":19");
     const auto migrated = parseJson(old);
     BAFX_CHECK(migrated.succeeded());
     BAFX_CHECK(migrated.config.schemaVersion == currentSchemaVersion);

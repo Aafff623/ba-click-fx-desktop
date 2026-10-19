@@ -29,6 +29,7 @@ add_executable(
     bafx_config_tests
     test_main.cpp
     config_tests.cpp
+    glow_style_config_tests.cpp
 )
 target_link_libraries(bafx_config_tests PRIVATE bafx::config)
 target_compile_features(bafx_config_tests PRIVATE cxx_std_20)

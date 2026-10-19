@@ -1135,6 +1135,51 @@ private:
     return true;
 }
 
+// Glow reads preserve the wire values verbatim; range policy lives in
+// validateConfig so a rejected document reports one canonical reason.
+[[nodiscard]] bool readGlowSettings(
+    const JsonValue::Object& object,
+    GlowSettings& glow,
+    std::string& error)
+{
+    std::string quality;
+    if (!readBool(object, "enabled", "glow", glow.enabled, error)
+        || !readString(object, "color", "glow", glow.color, error)
+        || !readString(
+            object,
+            "secondaryColor",
+            "glow",
+            glow.secondaryColor,
+            error)
+        || !readFloat(object, "intensity", "glow", glow.intensity, error)
+        || !readFloat(object, "trailWidthPx", "glow", glow.trailWidthPx, error)
+        || !readFloat(object, "linger", "glow", glow.linger, error)
+        || !readFloat(object, "glow", "glow", glow.glow, error)
+        || !readFloat(object, "hotspot", "glow", glow.hotspot, error)
+        || !readFloat(object, "followSpeed", "glow", glow.followSpeed, error)
+        || !readFloat(object, "grain", "glow", glow.grain, error)
+        || !readBool(object, "clickBurst", "glow", glow.clickBurst, error)
+        || !readEnum(object, "quality", "glow", quality, error))
+    {
+        return false;
+    }
+    if (!parseGlowQuality(quality, glow.quality))
+    {
+        error = "config field 'glow.quality' must be low, medium or high";
+        return false;
+    }
+    // Normalize at the read boundary exactly like effects.themeColor so the
+    // stored wire value is canonical. An empty secondaryColor stays empty.
+    if (!normalizeThemeColor(glow.color)
+        || (!glow.secondaryColor.empty()
+            && !normalizeThemeColor(glow.secondaryColor)))
+    {
+        error = "glow colors must be empty or #rrggbb";
+        return false;
+    }
+    return true;
+}
+
 [[nodiscard]] Config parseCurrentConfig(
     const JsonValue::Object& root,
     std::string& error)
@@ -1146,7 +1191,9 @@ private:
             root,
             {
                 "schemaVersion",
+                "effectStyle",
                 "effects",
+                "glow",
                 "background",
                 "display",
                 "input",
@@ -1159,6 +1206,7 @@ private:
     }
 
     const JsonValue::Object* effects = nullptr;
+    const JsonValue::Object* glow = nullptr;
     const JsonValue::Object* background = nullptr;
     const JsonValue::Object* display = nullptr;
     const JsonValue::Object* input = nullptr;
@@ -1166,6 +1214,7 @@ private:
     const JsonValue::Object* system = nullptr;
     const JsonValue::Object* hotkeys = nullptr;
     if (!readRequiredObject(root, "effects", effects, error)
+        || !readRequiredObject(root, "glow", glow, error)
         || !readRequiredObject(root, "background", background, error)
         || !readRequiredObject(root, "display", display, error)
         || !readRequiredObject(root, "input", input, error)
@@ -1174,6 +1223,19 @@ private:
         || !readRequiredObject(root, "hotkeys", hotkeys, error)
         || !readHotkeys(*hotkeys, config.hotkeys, error))
     {
+        return config;
+    }
+
+    // The style selector is a scalar, so it is read after the sections keep
+    // their historical first-error order.
+    std::string effectStyle;
+    if (!readString(root, "effectStyle", {}, effectStyle, error)
+        || !parseEffectStyle(effectStyle, config.effectStyle))
+    {
+        if (error.empty())
+        {
+            error = "config field 'effectStyle' must be ba or glowFluid";
+        }
         return config;
     }
 
@@ -1212,19 +1274,40 @@ private:
                 "performance",
                 error)
         || !validateKnownMembers(
-                *system,
-                {
-                    "startWithWindows",
-                    "startMinimized",
-                    "closeToTray",
-                    "spout2Enabled"},
-                "system",
-                error))
+            *system,
+            {
+                "startWithWindows",
+                "startMinimized",
+                "closeToTray",
+                "spout2Enabled"},
+            "system",
+            error)
+        || !validateKnownMembers(
+            *glow,
+            {
+                "enabled",
+                "color",
+                "secondaryColor",
+                "intensity",
+                "trailWidthPx",
+                "linger",
+                "glow",
+                "hotspot",
+                "followSpeed",
+                "grain",
+                "clickBurst",
+                "quality"},
+            "glow",
+            error))
     {
         return config;
     }
 
     if (!readEffectsFields(*effects, config.effects, error))
+    {
+        return config;
+    }
+    if (!readGlowSettings(*glow, config.glow, error))
     {
         return config;
     }
@@ -1457,10 +1540,26 @@ private:
     system.emplace("startWithWindows", JsonValue(config.system.startWithWindows));
     system.emplace("spout2Enabled", JsonValue(config.system.spout2Enabled));
 
+    JsonValue::Object glow;
+    glow.emplace("enabled", JsonValue(config.glow.enabled));
+    glow.emplace("color", JsonValue(config.glow.color));
+    glow.emplace("secondaryColor", JsonValue(config.glow.secondaryColor));
+    glow.emplace("intensity", JsonValue(static_cast<double>(config.glow.intensity)));
+    glow.emplace("trailWidthPx", JsonValue(static_cast<double>(config.glow.trailWidthPx)));
+    glow.emplace("linger", JsonValue(static_cast<double>(config.glow.linger)));
+    glow.emplace("glow", JsonValue(static_cast<double>(config.glow.glow)));
+    glow.emplace("hotspot", JsonValue(static_cast<double>(config.glow.hotspot)));
+    glow.emplace("followSpeed", JsonValue(static_cast<double>(config.glow.followSpeed)));
+    glow.emplace("grain", JsonValue(static_cast<double>(config.glow.grain)));
+    glow.emplace("clickBurst", JsonValue(config.glow.clickBurst));
+    glow.emplace("quality", JsonValue(std::string(toString(config.glow.quality))));
+
     JsonValue::Object root;
     root.emplace("background", JsonValue(std::move(background)));
     root.emplace("display", JsonValue(std::move(display)));
+    root.emplace("effectStyle", JsonValue(std::string(toString(config.effectStyle))));
     root.emplace("effects", JsonValue(std::move(effects)));
+    root.emplace("glow", JsonValue(std::move(glow)));
     root.emplace("input", JsonValue(std::move(input)));
     root.emplace("performance", JsonValue(std::move(performance)));
     root.emplace("schemaVersion", JsonValue(static_cast<double>(currentSchemaVersion)));
@@ -1815,6 +1914,40 @@ void appendJsonValue(
     return true;
 }
 
+// Schema 21 adds the style seam: a stable style selector plus the Glow
+// parameter namespace. BA stays selected so an upgrade renders exactly as
+// before, and the Glow defaults match the reference visual preset.
+[[nodiscard]] bool migrateSchema20To21(JsonValue::Object& root)
+{
+    const JsonValue* versionValue = member(root, "schemaVersion");
+    const double* version = versionValue == nullptr
+        ? nullptr
+        : std::get_if<double>(&versionValue->storage);
+    if (version == nullptr || !std::isfinite(*version) || *version != 20.0)
+    {
+        return false;
+    }
+
+    root.try_emplace("effectStyle", JsonValue(std::string("ba")));
+    const GlowSettings defaults;
+    JsonValue::Object glow;
+    glow.emplace("enabled", JsonValue(defaults.enabled));
+    glow.emplace("color", JsonValue(defaults.color));
+    glow.emplace("secondaryColor", JsonValue(defaults.secondaryColor));
+    glow.emplace("intensity", JsonValue(static_cast<double>(defaults.intensity)));
+    glow.emplace("trailWidthPx", JsonValue(static_cast<double>(defaults.trailWidthPx)));
+    glow.emplace("linger", JsonValue(static_cast<double>(defaults.linger)));
+    glow.emplace("glow", JsonValue(static_cast<double>(defaults.glow)));
+    glow.emplace("hotspot", JsonValue(static_cast<double>(defaults.hotspot)));
+    glow.emplace("followSpeed", JsonValue(static_cast<double>(defaults.followSpeed)));
+    glow.emplace("grain", JsonValue(static_cast<double>(defaults.grain)));
+    glow.emplace("clickBurst", JsonValue(defaults.clickBurst));
+    glow.emplace("quality", JsonValue(std::string(toString(defaults.quality))));
+    root.try_emplace("glow", JsonValue(std::move(glow)));
+    root["schemaVersion"] = JsonValue(21.0);
+    return true;
+}
+
 [[nodiscard]] ConfigLoadResult parseValue(std::string_view json)
 {
     JsonParser parser(json);
@@ -1907,9 +2040,17 @@ void appendJsonValue(
         {
             migrated = true;
         }
+        else if (*version == 20.0)
+        {
+            migrated = true;
+        }
         if (migrated && error.empty())
         {
             migrated = migrateSchema19To20(*originalRoot);
+        }
+        if (migrated && error.empty())
+        {
+            migrated = migrateSchema20To21(*originalRoot);
         }
     }
     if (!error.empty())
@@ -2437,6 +2578,74 @@ namespace
         else if (*path == "system.spout2Enabled")
         {
             valueAccepted = readPatchBool(result.system.spout2Enabled);
+        }
+        else if (*path == "effectStyle")
+        {
+            std::string style;
+            valueAccepted = readPatchString(style)
+                && parseEffectStyle(style, result.effectStyle);
+        }
+        else if (*path == "glow.enabled")
+        {
+            valueAccepted = readPatchBool(result.glow.enabled);
+        }
+        else if (*path == "glow.color")
+        {
+            std::string color;
+            valueAccepted = readPatchString(color)
+                && normalizeThemeColor(color);
+            if (valueAccepted)
+            {
+                result.glow.color = std::move(color);
+            }
+        }
+        else if (*path == "glow.secondaryColor")
+        {
+            std::string secondary;
+            valueAccepted = readPatchString(secondary)
+                && (secondary.empty() || normalizeThemeColor(secondary));
+            if (valueAccepted)
+            {
+                result.glow.secondaryColor = std::move(secondary);
+            }
+        }
+        else if (*path == "glow.intensity")
+        {
+            valueAccepted = readPatchFloat(result.glow.intensity);
+        }
+        else if (*path == "glow.trailWidthPx")
+        {
+            valueAccepted = readPatchFloat(result.glow.trailWidthPx);
+        }
+        else if (*path == "glow.linger")
+        {
+            valueAccepted = readPatchFloat(result.glow.linger);
+        }
+        else if (*path == "glow.glow")
+        {
+            valueAccepted = readPatchFloat(result.glow.glow);
+        }
+        else if (*path == "glow.hotspot")
+        {
+            valueAccepted = readPatchFloat(result.glow.hotspot);
+        }
+        else if (*path == "glow.followSpeed")
+        {
+            valueAccepted = readPatchFloat(result.glow.followSpeed);
+        }
+        else if (*path == "glow.grain")
+        {
+            valueAccepted = readPatchFloat(result.glow.grain);
+        }
+        else if (*path == "glow.clickBurst")
+        {
+            valueAccepted = readPatchBool(result.glow.clickBurst);
+        }
+        else if (*path == "glow.quality")
+        {
+            std::string quality;
+            valueAccepted = readPatchString(quality)
+                && parseGlowQuality(quality, result.glow.quality);
         }
         else if (*path == "hotkeys")
         {
@@ -3339,6 +3548,48 @@ bool validateConfig(const Config& config, std::string* error) noexcept
     {
         return failValidation("effects.themeColor must be #rrggbb");
     }
+    // Glow colors follow the same wire contract; an empty secondaryColor
+    // means "derive the cooling color from the primary color".
+    std::string normalizedGlowColor = config.glow.color;
+    if (!normalizeThemeColor(normalizedGlowColor))
+    {
+        return failValidation("glow.color must be #rrggbb");
+    }
+    std::string normalizedGlowSecondary = config.glow.secondaryColor;
+    if (!normalizedGlowSecondary.empty()
+        && !normalizeThemeColor(normalizedGlowSecondary))
+    {
+        return failValidation("glow.secondaryColor must be empty or #rrggbb");
+    }
+    if (!(config.glow.intensity >= 0.0F) || !(config.glow.glow >= 0.0F)
+        || !(config.glow.hotspot >= 0.0F) || !(config.glow.grain >= 0.0F))
+    {
+        return failValidation(
+            "glow intensity, glow, hotspot and grain must be non-negative");
+    }
+    if (!(config.glow.followSpeed >= 0.0F && config.glow.followSpeed <= 1.0F))
+    {
+        return failValidation("glow.followSpeed must be within [0, 1]");
+    }
+    if (!(config.glow.trailWidthPx >= minimumGlowTrailWidthPx
+            && config.glow.trailWidthPx <= maximumGlowTrailWidthPx))
+    {
+        return failValidation("glow.trailWidthPx must be within [0.5, 40]");
+    }
+    if (!(config.glow.linger >= minimumGlowLinger
+            && config.glow.linger <= maximumGlowLinger))
+    {
+        return failValidation("glow.linger must be within [0.1, 10]");
+    }
+    switch (config.glow.quality)
+    {
+    case GlowQuality::Low:
+    case GlowQuality::Medium:
+    case GlowQuality::High:
+        break;
+    default:
+        return failValidation("glow.quality is not a recognized quality tier");
+    }
     switch (config.background.mode)
     {
     case RenderMode::BackgroundAware:
@@ -3695,6 +3946,71 @@ std::string_view toString(const EffectsMode mode) noexcept
         return "core";
     }
     return "full";
+}
+
+std::string_view toString(const EffectStyle style) noexcept
+{
+    switch (style)
+    {
+    case EffectStyle::BA:
+        return "ba";
+    case EffectStyle::GlowFluid:
+        return "glowFluid";
+    }
+    return "ba";
+}
+
+std::string_view toString(const GlowQuality quality) noexcept
+{
+    switch (quality)
+    {
+    case GlowQuality::Low:
+        return "low";
+    case GlowQuality::Medium:
+        return "medium";
+    case GlowQuality::High:
+        return "high";
+    }
+    return "high";
+}
+
+bool parseEffectStyle(
+    const std::string_view value,
+    EffectStyle& output) noexcept
+{
+    if (value == "ba")
+    {
+        output = EffectStyle::BA;
+        return true;
+    }
+    if (value == "glowFluid")
+    {
+        output = EffectStyle::GlowFluid;
+        return true;
+    }
+    return false;
+}
+
+bool parseGlowQuality(
+    const std::string_view value,
+    GlowQuality& output) noexcept
+{
+    if (value == "low")
+    {
+        output = GlowQuality::Low;
+        return true;
+    }
+    if (value == "medium")
+    {
+        output = GlowQuality::Medium;
+        return true;
+    }
+    if (value == "high")
+    {
+        output = GlowQuality::High;
+        return true;
+    }
+    return false;
 }
 
 }

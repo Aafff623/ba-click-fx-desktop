@@ -12,7 +12,7 @@
 namespace bafx::config
 {
 
-inline constexpr std::uint32_t currentSchemaVersion = 20U;
+inline constexpr std::uint32_t currentSchemaVersion = 21U;
 inline constexpr std::size_t maximumDisplayOverrides = 64U;
 inline constexpr std::size_t maximumDisplayKeyBytes = 4096U;
 
@@ -49,6 +49,47 @@ enum class EffectsMode : std::uint8_t
     Full,
     Core
 };
+
+// The style axis is orthogonal to EffectsMode: it selects which effect engine
+// renders, not which performance tier runs. BA is the shipped Unity-faithful
+// engine; GlowFluid is the native fluid-glow port.
+enum class EffectStyle : std::uint8_t
+{
+    BA,
+    GlowFluid
+};
+
+enum class GlowQuality : std::uint8_t
+{
+    Low,
+    Medium,
+    High
+};
+
+// Glow keeps its own parameter namespace with its own units. trailWidthPx is
+// a physical pixel semantic; it must never be mapped onto the BA trailWidth
+// multiplier. An empty secondaryColor derives the cooling color from the
+// primary color by hue rotation, matching the reference implementation.
+struct GlowSettings final
+{
+    bool enabled{true};
+    std::string color{"#7c3aed"};
+    std::string secondaryColor{"#a855f7"};
+    float intensity{0.3F};
+    float trailWidthPx{3.0F};
+    float linger{0.3F};
+    float glow{0.5F};
+    float hotspot{0.0F};
+    float followSpeed{1.0F};
+    float grain{0.15F};
+    bool clickBurst{true};
+    GlowQuality quality{GlowQuality::High};
+};
+
+inline constexpr float minimumGlowTrailWidthPx = 0.5F;
+inline constexpr float maximumGlowTrailWidthPx = 40.0F;
+inline constexpr float minimumGlowLinger = 0.1F;
+inline constexpr float maximumGlowLinger = 10.0F;
 
 struct DisplayOverrideConfig final
 {
@@ -204,7 +245,9 @@ struct HotkeysConfig final
 struct Config
 {
     std::uint32_t schemaVersion{currentSchemaVersion};
+    EffectStyle effectStyle{EffectStyle::BA};
     EffectsConfig effects{};
+    GlowSettings glow{};
     BackgroundConfig background{};
     DisplayConfig display{};
     InputConfig input{};
@@ -401,6 +444,17 @@ struct ConfigChange
 [[nodiscard]] std::string_view toString(BloomQuality quality) noexcept;
 [[nodiscard]] std::string_view toString(FramePacing pacing) noexcept;
 [[nodiscard]] std::string_view toString(EffectsMode mode) noexcept;
+[[nodiscard]] std::string_view toString(EffectStyle style) noexcept;
+[[nodiscard]] std::string_view toString(GlowQuality quality) noexcept;
+
+// Strict wire-name parsers for the style seam. They reject unknown values so a
+// malformed document can never silently select a different engine.
+[[nodiscard]] bool parseEffectStyle(
+    std::string_view value,
+    EffectStyle& output) noexcept;
+[[nodiscard]] bool parseGlowQuality(
+    std::string_view value,
+    GlowQuality& output) noexcept;
 
 // Maps product quality choices onto the existing Unity Bloom diffusion range.
 // High deliberately remains at the extracted game's verified diffusion of 7.
